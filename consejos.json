@@ -1,0 +1,170 @@
+{
+  "1": {
+    "fecha": "Tuesday 29 de July de 2025",
+    "tema": "Ejercicio físico moderado",
+    "texto": "Moverte cada día activa células inmunes, reduce la inflamación y fortalece las mitocondrias. No hace falta matarse: caminar, nadar o pedalear sirve.",
+    "referencia": "Nieman et al., J Sport Health Sci, 2019"
+  },
+  "2": {
+    "fecha": "Wednesday 30 de July de 2025",
+    "tema": "Sueño reparador",
+    "texto": "Dormir bien permite al cuerpo reparar tejidos, consolidar memoria inmunológica y regular el cortisol. Intenta dormir 7-9h sin interrupciones.",
+    "referencia": "Besedovsky et al., Nat Rev Neurosci, 2012"
+  },
+  "3": {
+    "fecha": "Thursday 31 de July de 2025",
+    "tema": "Alimentación inmunoactiva",
+    "texto": "El ajo, la cúrcuma, el jengibre, el té verde y alimentos ricos en zinc o vitamina C son aliados naturales del sistema inmune.",
+    "referencia": "Calder et al., BMJ Nutr Prev Health, 2020"
+  },
+  "4": {
+    "fecha": "Friday 01 de August de 2025",
+    "tema": "Exposición solar y vitamina D",
+    "texto": "Tomar el Sol entre 30 y 40º activa la vitamina D sin quemar la piel. Esto fortalece mucosas, microbiota y defensa antiviral.",
+    "referencia": "Holick et al., N Engl J Med, 2007"
+  },
+  "5": {
+    "fecha": "Saturday 02 de August de 2025",
+    "tema": "Ayuno intermitente",
+    "texto": "Ayunar unas horas al día da un descanso al sistema digestivo y activa procesos de reciclaje celular que fortalecen la inmunidad.",
+    "referencia": "Longo & Panda, Cell Metab, 2016"
+  },
+  "6": {
+    "fecha": "Sunday 03 de August de 2025",
+    "tema": "Naturaleza y tierra",
+    "texto": "Caminar descalzo, tocar tierra, árboles o nadar en la naturaleza reduce el estrés oxidativo y equilibra tu sistema inmune.",
+    "referencia": "Chevalier et al., J Environ Public Health, 2012"
+  },
+  "7": {
+    "fecha": "Monday 04 de August de 2025",
+    "tema": "Microbiota intestinal",
+    "texto": "Una microbiota equilibrada es clave para una buena inmunidad. Comer alimentos ricos en fibra, polifenoles y fermentados ayuda a mantenerla diversa y funcional.",
+    "referencia": "Valdes et al., Nat Rev Immunol, 2018"
+  },
+  "8": {
+    "fecha": "Tuesday 05 de August de 2025",
+    "tema": "Ejercicio físico moderado",
+    "texto": "Moverte cada día activa células inmunes, reduce la inflamación y fortalece las mitocondrias. No hace falta matarse: caminar, nadar o pedalear sirve.",
+    "referencia": "Nieman et al., J Sport Health Sci, 2019"
+  },
+  "9": {
+    "fecha": "Wednesday 06 de August de 2025",
+    "tema": "Sueño reparador",
+    "texto": "Dormir bien permite al cuerpo reparar tejidos, consolidar memoria inmunológica y regular el cortisol. Intenta dormir 7-9h sin interrupciones.",
+    "referencia": "Besedovsky et al., Nat Rev Neurosci, 2012"
+  },
+  "10": {
+    "fecha": "Thursday 07 de August de 2025",
+    "tema": "Alimentación inmunoactiva",
+    "texto": "El ajo, la cúrcuma, el jengibre, el té verde y alimentos ricos en zinc o vitamina C son aliados naturales del sistema inmune.",
+    "referencia": "Calder et al., BMJ Nutr Prev Health, 2020"
+  },
+  "11": {
+    "fecha": "Friday 08 de August de 2025",
+    "tema": "Exposición solar y vitamina D",
+    "texto": "Tomar el Sol entre 30 y 40º activa la vitamina D sin quemar la piel. Esto fortalece mucosas, microbiota y defensa antiviral.",
+    "referencia": "Holick et al., N Engl J Med, 2007"
+  },
+  "12": {
+    "fecha": "Saturday 09 de August de 2025",
+    "tema": "Ayuno intermitente",
+    "texto": "Ayunar unas horas al día da un descanso al sistema digestivo y activa procesos de reciclaje celular que fortalecen la inmunidad.",
+    "referencia": "Longo & Panda, Cell Metab, 2016"
+  },
+  "13": {
+    "fecha": "Sunday 10 de August de 2025",
+    "tema": "Naturaleza y tierra",
+    "texto": "Caminar descalzo, tocar tierra, árboles o nadar en la naturaleza reduce el estrés oxidativo y equilibra tu sistema inmune.",
+    "referencia": "Chevalier et al., J Environ Public Health, 2012"
+  },
+  "14": {
+    "fecha": "Monday 11 de August de 2025",
+    "tema": "Microbiota intestinal",
+    "texto": "Una microbiota equilibrada es clave para una buena inmunidad. Comer alimentos ricos en fibra, polifenoles y fermentados ayuda a mantenerla diversa y funcional.",
+    "referencia": "Valdes et al., Nat Rev Immunol, 2018"
+  },
+  "15": {
+    "fecha": "Tuesday 12 de August de 2025",
+    "tema": "Ejercicio físico moderado",
+    "texto": "Moverte cada día activa células inmunes, reduce la inflamación y fortalece las mitocondrias. No hace falta matarse: caminar, nadar o pedalear sirve.",
+    "referencia": "Nieman et al., J Sport Health Sci, 2019"
+  },
+  "16": {
+    "fecha": "Wednesday 13 de August de 2025",
+    "tema": "Sueño reparador",
+    "texto": "Dormir bien permite al cuerpo reparar tejidos, consolidar memoria inmunológica y regular el cortisol. Intenta dormir 7-9h sin interrupciones.",
+    "referencia": "Besedovsky et al., Nat Rev Neurosci, 2012"
+  },
+  "17": {
+    "fecha": "Thursday 14 de August de 2025",
+    "tema": "Alimentación inmunoactiva",
+    "texto": "El ajo, la cúrcuma, el jengibre, el té verde y alimentos ricos en zinc o vitamina C son aliados naturales del sistema inmune.",
+    "referencia": "Calder et al., BMJ Nutr Prev Health, 2020"
+  },
+  "18": {
+    "fecha": "Friday 15 de August de 2025",
+    "tema": "Exposición solar y vitamina D",
+    "texto": "Tomar el Sol entre 30 y 40º activa la vitamina D sin quemar la piel. Esto fortalece mucosas, microbiota y defensa antiviral.",
+    "referencia": "Holick et al., N Engl J Med, 2007"
+  },
+  "19": {
+    "fecha": "Saturday 16 de August de 2025",
+    "tema": "Ayuno intermitente",
+    "texto": "Ayunar unas horas al día da un descanso al sistema digestivo y activa procesos de reciclaje celular que fortalecen la inmunidad.",
+    "referencia": "Longo & Panda, Cell Metab, 2016"
+  },
+  "20": {
+    "fecha": "Sunday 17 de August de 2025",
+    "tema": "Naturaleza y tierra",
+    "texto": "Caminar descalzo, tocar tierra, árboles o nadar en la naturaleza reduce el estrés oxidativo y equilibra tu sistema inmune.",
+    "referencia": "Chevalier et al., J Environ Public Health, 2012"
+  },
+  "21": {
+    "fecha": "Monday 18 de August de 2025",
+    "tema": "Microbiota intestinal",
+    "texto": "Una microbiota equilibrada es clave para una buena inmunidad. Comer alimentos ricos en fibra, polifenoles y fermentados ayuda a mantenerla diversa y funcional.",
+    "referencia": "Valdes et al., Nat Rev Immunol, 2018"
+  },
+  "22": {
+    "fecha": "Tuesday 19 de August de 2025",
+    "tema": "Ejercicio físico moderado",
+    "texto": "Moverte cada día activa células inmunes, reduce la inflamación y fortalece las mitocondrias. No hace falta matarse: caminar, nadar o pedalear sirve.",
+    "referencia": "Nieman et al., J Sport Health Sci, 2019"
+  },
+  "23": {
+    "fecha": "Wednesday 20 de August de 2025",
+    "tema": "Sueño reparador",
+    "texto": "Dormir bien permite al cuerpo reparar tejidos, consolidar memoria inmunológica y regular el cortisol. Intenta dormir 7-9h sin interrupciones.",
+    "referencia": "Besedovsky et al., Nat Rev Neurosci, 2012"
+  },
+  "24": {
+    "fecha": "Thursday 21 de August de 2025",
+    "tema": "Alimentación inmunoactiva",
+    "texto": "El ajo, la cúrcuma, el jengibre, el té verde y alimentos ricos en zinc o vitamina C son aliados naturales del sistema inmune.",
+    "referencia": "Calder et al., BMJ Nutr Prev Health, 2020"
+  },
+  "25": {
+    "fecha": "Friday 22 de August de 2025",
+    "tema": "Exposición solar y vitamina D",
+    "texto": "Tomar el Sol entre 30 y 40º activa la vitamina D sin quemar la piel. Esto fortalece mucosas, microbiota y defensa antiviral.",
+    "referencia": "Holick et al., N Engl J Med, 2007"
+  },
+  "26": {
+    "fecha": "Saturday 23 de August de 2025",
+    "tema": "Ayuno intermitente",
+    "texto": "Ayunar unas horas al día da un descanso al sistema digestivo y activa procesos de reciclaje celular que fortalecen la inmunidad.",
+    "referencia": "Longo & Panda, Cell Metab, 2016"
+  },
+  "27": {
+    "fecha": "Sunday 24 de August de 2025",
+    "tema": "Naturaleza y tierra",
+    "texto": "Caminar descalzo, tocar tierra, árboles o nadar en la naturaleza reduce el estrés oxidativo y equilibra tu sistema inmune.",
+    "referencia": "Chevalier et al., J Environ Public Health, 2012"
+  },
+  "28": {
+    "fecha": "Monday 25 de August de 2025",
+    "tema": "Microbiota intestinal",
+    "texto": "Una microbiota equilibrada es clave para una buena inmunidad. Comer alimentos ricos en fibra, polifenoles y fermentados ayuda a mantenerla diversa y funcional.",
+    "referencia": "Valdes et al., Nat Rev Immunol, 2018"
+  }
+}

@@ -1,81 +1,84 @@
+
 import json
 from datetime import datetime, timedelta
-from telegram import Bot
 from astral import LocationInfo
-from astral.sun import sun
-from astral.location import Location
-from zoneinfo import ZoneInfo
-import asyncio
+from astral.sun import elevation, noon
+from telegram import Bot
 
-# === CONFIGURACIÓN ===
+# Configuración
 TOKEN = '7254029750:AAG-ukM8YXZ-9Fq7YhcMj2A8ny6Gz92TQvE'
 USER_ID = 7678609
 
-async def enviar_consejo():
-    # Leer ubicación
-    with open("ubicacion.json") as f:
-        datos = json.load(f)
+# Cargar ubicación
+with open("ubicacion.json") as f:
+    datos = json.load(f)
+ciudad = datos["ciudad"]
+lat = datos["latitud"]
+lon = datos["longitud"]
 
-    lat = datos["latitud"]
-    lon = datos["longitud"]
-    ciudad = datos["ciudad"]
-    tz = ZoneInfo("Europe/Madrid")
+# Obtener franja solar entre 30 y 40º antes y después del mediodía
+from astral.location import Location
+from zoneinfo import ZoneInfo
 
-    # Crear objeto de localización
-    loc_info = LocationInfo(ciudad, "España", "Europe/Madrid", lat, lon)
-    loc = Location(loc_info)
-    ahora = datetime.now(tz=tz)
-    hoy = ahora.date()
+loc = Location(("", ciudad, lat, lon, "Europe/Madrid", 0))
+tz = ZoneInfo("Europe/Madrid")
+ahora = datetime.now(tz)
+h_ini = ahora.replace(hour=5, minute=0, second=0, microsecond=0)
+h_fin = ahora.replace(hour=21, minute=0, second=0)
 
-    # Obtener el mediodía solar exacto
-    eventos = sun(loc.observer, date=hoy, tzinfo=tz)
-    mediodia = eventos['noon']
+intervalo = timedelta(minutes=1)
+franjas = {"mañana": [], "tarde": []}
+mediodia = noon(loc.observer, tzinfo=tz, date=ahora.date())
 
-    # Barrido horario para detectar elevaciones entre 30° y 40°
-    inicio_dia = datetime.combine(hoy, datetime.min.time(), tz)
-    fin_dia = datetime.combine(hoy, datetime.max.time(), tz)
-    hora = inicio_dia.replace(hour=5, minute=0, second=0)
-    paso = timedelta(minutes=1)
+hora = h_ini
+while hora <= h_fin:
+    angulo = loc.solar_elevation(hora)
+    if 30 <= angulo <= 40:
+        if hora < mediodia:
+            franjas["mañana"].append(hora)
+        elif hora > mediodia:
+            franjas["tarde"].append(hora)
+    hora += intervalo
 
-    mañana = []
-    tarde = []
-
-    while hora <= fin_dia:
-        elev = loc.solar_elevation(hora)
-        if 30 <= elev <= 40:
-            if hora < mediodia:
-                mañana.append(hora)
-            elif hora > mediodia:
-                tarde.append(hora)
-        hora += paso
-
-    # Formatear resultado
-    def formatear_intervalo(lista):
-        if not lista:
-            return "—"
+def resumen_franja(lista):
+    if lista:
         return f"{lista[0].strftime('%H:%M')} a {lista[-1].strftime('%H:%M')}"
+    return None
 
-    bloque_mañana = formatear_intervalo(mañana)
-    bloque_tarde = formatear_intervalo(tarde)
+f_manana = resumen_franja(franjas["mañana"])
+f_tarde = resumen_franja(franjas["tarde"])
 
-    mensaje = f"""
-☀️ *Consejo inmunológico diario*
+franja_texto = ""
+if f_manana:
+    franja_texto += f"🔹 Mañana: de {f_manana}\n"
+if f_tarde:
+    franja_texto += f"🔹 Tarde: de {f_tarde}"
 
-Hoy en *{ciudad}*, el Sol estará entre 30° y 40° de elevación en los siguientes intervalos *seguros para sintetizar vitamina D*:
+if not franja_texto:
+    franja_texto = "Hoy no hay franjas seguras entre 30° y 40°."
 
-• 🌅 Mañana: {bloque_mañana}
-• 🌇 Tarde: {bloque_tarde}
+# Cargar consejo del día
+with open("consejos.json", encoding="utf-8") as f:
+    consejos = json.load(f)
 
-✅ Aprovecha 10–20 minutos de exposición directa en uno de estos bloques:
-- Sin gafas de sol ni protector solar (en ese breve tiempo)
-- Con brazos y cara descubiertos si es posible
+# Calcular índice del consejo (1 al 28)
+inicio = datetime(2025, 7, 29)
+hoy = datetime.now(tz).date()
+idx = (hoy - inicio.date()).days + 1
+consejo = consejos.get(str(idx), {"tema": "sin tema", "texto": "No hay consejo disponible.", "referencia": ""})
 
-🎯 Exposición regular, breve y bien cronometrada = máxima inmunidad sin daño solar.
+# Mensaje
+mensaje = f"""☀️ *Consejo inmunológico diario*
+
+Hoy en *{ciudad}*, el Sol estará entre 30° y 40°:
+{franja_texto}
+
+📌 *Tema del día*: {consejo['tema']}
+{consejo['texto']}
+
+📖 {consejo['referencia']}
 """
 
-    bot = Bot(token=TOKEN)
-    await bot.send_message(chat_id=USER_ID, text=mensaje, parse_mode="Markdown")
-
-# Ejecutar
-asyncio.run(enviar_consejo())
-
+# Enviar mensaje
+bot = Bot(token=TOKEN)
+bot.send_message(chat_id=USER_ID, text=mensaje, parse_mode="Markdown")
