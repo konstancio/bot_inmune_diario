@@ -1,80 +1,36 @@
+
 import json
-from astral import LocationInfo
-from astral.sun import sun, noon
-from astral.location import Observer
-from datetime import datetime, timedelta
-import pytz
-from telegram import Bot
-import random
+from datetime import datetime
+from pytz import timezone
+from astral.sun import noon
+from astral import Observer
 
-# Cargar ubicación
-with open("ubicacion.json") as f:
-    datos = json.load(f)
+# Cargar datos
+with open("consejos.json", "r", encoding="utf-8") as f:
+    consejos = json.load(f)
 
-lat = datos["latitud"]
-lon = datos["longitud"]
-ciudad = datos["ciudad"]
+with open("ubicacion.json", "r", encoding="utf-8") as f:
+    ubicacion = json.load(f)
 
-# Configurar zona horaria
-tz = pytz.timezone("Europe/Madrid")
-
-# Crear objeto LocationInfo y observer
-loc = LocationInfo(name=ciudad, region="España", timezone="Europe/Madrid", latitude=lat, longitude=lon)
+# Obtener fecha y zona horaria
+tz = timezone("Europe/Madrid")
 ahora = datetime.now(tz)
-intervalo = timedelta(minutes=1)
+dia_semana = ahora.strftime("%A").lower()
+numero_dia = ahora.day
+
+# Verificar que existen consejos para el día de la semana
+if dia_semana not in consejos or not consejos[dia_semana]:
+    raise ValueError(f"No hay consejos para el día: {dia_semana}")
+
+# Seleccionar consejo
+indice = (numero_dia - 1) % len(consejos[dia_semana])
+consejo = consejos[dia_semana][indice]
+
+# Calcular franja segura solar
+lat, lon = ubicacion["lat"], ubicacion["lon"]
 obs = Observer(latitude=lat, longitude=lon)
 mediodia = noon(observer=obs, tzinfo=tz, date=ahora.date())
 
-# Cargar consejos desde JSON
-with open("consejos_diarios.json") as f:
-    consejos = json.load(f)
-
-dia_semana = ahora.strftime("%A").lower()
-numero_dia = ahora.day
-indice = (numero_dia - 1) % len(consejos.get(dia_semana, []))
-consejo_dia = consejos.get(dia_semana, ["No hay consejo disponible."])[indice]
-
-# Calcular horas de sol entre 30° y 40° antes y después del mediodía
-franjas = {"mañana": [], "tarde": []}
-
-hora = ahora.replace(hour=5, minute=0, second=0, microsecond=0)
-fin = ahora.replace(hour=21, minute=0)
-
-while hora <= fin:
-    elev = loc.solar_elevation(hora)
-    if 30 <= elev <= 40:
-        if hora < mediodia:
-            franjas["mañana"].append(hora)
-        elif hora > mediodia:
-            franjas["tarde"].append(hora)
-    hora += intervalo
-
-def formatear_franja(franja):
-    if not franja:
-        return "no hay franja solar entre 30° y 40°"
-    return f"entre las {franja[0].strftime('%H:%M')} y las {franja[-1].strftime('%H:%M')}"
-
-franja_manana = formatear_franja(franjas["mañana"])
-franja_tarde = formatear_franja(franjas["tarde"])
-
-# Construir mensaje
-mensaje = f"""
-☀️ *Consejo inmunológico diario*
-
-Hoy en *{ciudad}*, el Sol estará entre 30° y 40° de elevación:
-
-🌅 Por la mañana: {franja_manana}
-🌇 Por la tarde: {franja_tarde}
-
-📌 Consejo del día:
-{consejo_dia}
-
-🕘 Repite esto a diario y tu sistema inmune se sincronizará con el Sol 🌿
-"""
-
-# Enviar mensaje
-TOKEN = '7254029750:AAG-ukM8YXZ-9Fq7YhcMj2A8ny6Gz92TQvE'
-USER_ID = 7678609
-
-bot = Bot(token='7254029750:AAG-ukM8YXZ-9Fq7YhcMj2A8ny6Gz92TQvE')
-bot.send_message(chat_id=7678609, text=mensaje, parse_mode="Markdown")
+# Simulación del envío (se reemplaza por bot.send_message en producción)
+print(f"Consejo del día ({dia_semana.title()}):\n{consejo}")
+print(f"Hora solar local aproximada (mediodía): {mediodia.strftime('%H:%M')}")
