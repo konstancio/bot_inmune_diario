@@ -9,6 +9,18 @@ with open("consejos.json", encoding="utf-8") as f:
 
 # Día actual
 hoy = datetime.now(pytz.timezone("Europe/Madrid"))
+dias_es = {
+    "monday": "lunes",
+    "tuesday": "martes",
+    "wednesday": "miércoles",
+    "thursday": "jueves",
+    "friday": "viernes",
+    "saturday": "sábado",
+    "sunday": "domingo"
+}
+dia_semana_en = hoy.strftime("%A").lower()
+dia_semana = dias_es[dia_semana_en]
+
 dia_semana = hoy.strftime("%A").lower()
 
 # Seleccionar consejo
