@@ -24,8 +24,14 @@ dia_semana = dias_es[dia_semana_en]
 dia_semana = hoy.strftime("%A").lower()
 
 # Seleccionar consejo
-indice = (hoy.toordinal() - date(2025, 7, 29).toordinal()) % len(consejos.get(dia_semana, []))
-consejo = consejos.get(dia_semana, ["No hay consejo para hoy."])[indice]
+consejos_dia = consejos.get(dia_semana, [])
+
+if not consejos_dia:
+    consejo = f"No hay consejos disponibles para {dia_semana.title()}."
+else:
+    indice = (hoy.toordinal() - date(2025, 7, 29).toordinal()) % len(consejos_dia)
+    consejo = consejos_dia[indice]
+
 
 # Enviar por Telegram
 TOKEN = "AQUÍ_TU_TOKEN"
