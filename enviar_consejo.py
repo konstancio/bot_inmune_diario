@@ -86,3 +86,7 @@ bot.send_message(chat_id=USER_ID, text=mensaje, parse_mode="Markdown")
 with open(RUTA_FECHA, "w") as f:
     f.write(FECHA_HOY)
 
+print(f"Archivo de control creado: {RUTA_FECHA}")
+
+print("Archivo guardado correctamente")
+
