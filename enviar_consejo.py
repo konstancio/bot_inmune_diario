@@ -20,7 +20,9 @@ lon = datos["longitud"]
 from astral.location import Location
 from zoneinfo import ZoneInfo
 
-loc = Location(("", ciudad, lat, lon, "Europe/Madrid", 0))
+from astral import LocationInfo
+loc = LocationInfo(name=ciudad, region="España", latitude=lat, longitude=lon, timezone="Europe/Madrid")
+
 tz = ZoneInfo("Europe/Madrid")
 ahora = datetime.now(tz)
 h_ini = ahora.replace(hour=5, minute=0, second=0, microsecond=0)
@@ -28,7 +30,12 @@ h_fin = ahora.replace(hour=21, minute=0, second=0)
 
 intervalo = timedelta(minutes=1)
 franjas = {"mañana": [], "tarde": []}
-mediodia = noon(loc.observer, tzinfo=tz, date=ahora.date())
+from astral.sun import noon
+from astral.location import Observer
+
+obs = Observer(latitude=lat, longitude=lon)
+medi... = noon(observer=obs, tzinfo=tz, date=ahora.date())
+
 
 hora = h_ini
 while hora <= h_fin:
