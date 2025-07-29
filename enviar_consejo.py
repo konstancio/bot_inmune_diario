@@ -1,36 +1,23 @@
-
 import json
 from datetime import datetime
-from pytz import timezone
-from astral.sun import noon
-from astral import Observer
+import pytz
+import requests
 
-# Cargar datos
-with open("consejos.json", "r", encoding="utf-8") as f:
+# Cargar consejos
+with open("consejos.json", encoding="utf-8") as f:
     consejos = json.load(f)
 
-with open("ubicacion.json", "r", encoding="utf-8") as f:
-    ubicacion = json.load(f)
-
-# Obtener fecha y zona horaria
-tz = timezone("Europe/Madrid")
-ahora = datetime.now(tz)
-dia_semana = ahora.strftime("%A").lower()
-numero_dia = ahora.day
-
-# Verificar que existen consejos para el día de la semana
-if dia_semana not in consejos or not consejos[dia_semana]:
-    raise ValueError(f"No hay consejos para el día: {dia_semana}")
+# Día actual
+hoy = datetime.now(pytz.timezone("Europe/Madrid"))
+dia_semana = hoy.strftime("%A").lower()
 
 # Seleccionar consejo
-indice = (numero_dia - 1) % len(consejos[dia_semana])
-consejo = consejos[dia_semana][indice]
+indice = (hoy.toordinal() - date(2025, 7, 29).toordinal()) % len(consejos.get(dia_semana, []))
+consejo = consejos.get(dia_semana, ["No hay consejo para hoy."])[indice]
 
-# Calcular franja segura solar
-lat, lon = ubicacion["lat"], ubicacion["lon"]
-obs = Observer(latitude=lat, longitude=lon)
-mediodia = noon(observer=obs, tzinfo=tz, date=ahora.date())
+# Enviar por Telegram
+TOKEN = "AQUÍ_TU_TOKEN"
+CHAT_ID = "AQUÍ_TU_CHAT_ID"
+mensaje = f"📅 Consejo para hoy ({dia_semana.title()}):\n\n{consejo}"
 
-# Simulación del envío (se reemplaza por bot.send_message en producción)
-print(f"Consejo del día ({dia_semana.title()}):\n{consejo}")
-print(f"Hora solar local aproximada (mediodía): {mediodia.strftime('%H:%M')}")
+requests.get(f"https://api.telegram.org/bot{TOKEN}/sendMessage", params={"chat_id": CHAT_ID, "text": mensaje})
