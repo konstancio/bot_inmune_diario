@@ -73,8 +73,8 @@ Hoy en *{ciudad}*, el Sol estará entre 30° y 40° de elevación:
 """
 
 # Enviar mensaje
-TOKEN = 'TU_TOKEN'
-USER_ID = TU_ID
+TOKEN = '7254029750:AAG-ukM8YXZ-9Fq7YhcMj2A8ny6Gz92TQvE'
+USER_ID = 7678609
 
-bot = Bot(token=TOKEN)
-bot.send_message(chat_id=USER_ID, text=mensaje, parse_mode="Markdown")
+bot = Bot(token='7254029750:AAG-ukM8YXZ-9Fq7YhcMj2A8ny6Gz92TQvE')
+bot.send_message(chat_id=7678609, text=mensaje, parse_mode="Markdown")
