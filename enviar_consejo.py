@@ -33,9 +33,11 @@ else:
     consejo = consejos_dia[indice]
 
 
-# Enviar por Telegram
-TOKEN = "AQUÍ_TU_TOKEN"
-CHAT_ID = "AQUÍ_TU_CHAT_ID"
+import os
+
+TOKEN = os.getenv("TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
 mensaje = f"📅 Consejo para hoy ({dia_semana.title()}):\n\n{consejo}"
 
 requests.get(f"https://api.telegram.org/bot{TOKEN}/sendMessage", params={"chat_id": CHAT_ID, "text": mensaje})
