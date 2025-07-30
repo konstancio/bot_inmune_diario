@@ -1,29 +1,55 @@
+# calcular_intervalos.py
 from astral import LocationInfo
-from astral.sun import elevation
+from astral.sun import elevation, sun
 from datetime import datetime, timedelta
+import json
+import pytz
 
-def calcular_intervalos_optimos(ciudad, latitud, longitud, tz):
-    location = LocationInfo(ciudad, "España", tz, latitud, longitud)
+def calcular_intervalo():
+    with open("ubicacion.json") as f:
+        datos = json.load(f)
 
-    hoy = datetime.now().date()
-    minutos_totales = 24 * 60
-    intervalo = 5  # minutos
-    instantes = [datetime.combine(hoy, datetime.min.time()) + timedelta(minutes=i) for i in range(0, minutos_totales, intervalo)]
+    ciudad = datos["ciudad"]
+    lat = datos["latitud"]
+    lon = datos["longitud"]
 
-    intervalos_validos = []
-    intervalo_actual = []
+    loc = LocationInfo(name=ciudad, region="",
+                       timezone="Europe/Madrid", latitude=lat, longitude=lon)
 
-    for instante in instantes:
-        alt = elevation(instante, location.observer)
+    tz = pytz.timezone(loc.timezone)
+    ahora = datetime.now(tz)
+    fecha = ahora.date()
+
+    s = sun(loc.observer, date=fecha, tzinfo=tz)
+    mediodia = s["noon"]
+
+    intervalo = timedelta(minutes=1)
+    hora = datetime.combine(fecha, datetime.min.time()).replace(tzinfo=tz, hour=6)
+    fin = datetime.combine(fecha, datetime.max.time()).replace(tzinfo=tz, hour=21)
+
+    antes = []
+    despues = []
+
+    while hora <= fin:
+        alt = elevation(loc.observer, hora)
         if 30 <= alt <= 40:
-            intervalo_actual.append(instante)
-        else:
-            if len(intervalo_actual) >= 2:
-                intervalos_validos.append((intervalo_actual[0], intervalo_actual[-1]))
-            intervalo_actual = []
+            if hora < mediodia:
+                antes.append(hora)
+            elif hora > mediodia:
+                despues.append(hora)
+        hora += intervalo
 
-    if len(intervalo_actual) >= 2:
-        intervalos_validos.append((intervalo_actual[0], intervalo_actual[-1]))
+    def formatear(lista):
+        if not lista:
+            return None
+        return f"{lista[0].strftime('%H:%M')} - {lista[-1].strftime('%H:%M')}"
 
-    return intervalos_validos
+    return {
+        "ciudad": ciudad,
+        "franja_mañana": formatear(antes),
+        "franja_tarde": formatear(despues)
+    }
+
+if __name__ == "__main__":
+    print(calcular_intervalo())
 
