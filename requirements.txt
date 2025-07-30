@@ -3,4 +3,4 @@ astral
 pytz
 geopy
 requests
-
+timezonefinder
