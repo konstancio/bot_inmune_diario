@@ -1,53 +1,78 @@
-import json
-from datetime import datetime
 import os
-import requests
+from datetime import datetime, date
 from configuracion_ubicacion import obtener_ubicacion
 from calcular_intervalos import calcular_intervalos_optimos
+import requests
 
-TOKEN = os.environ.get("TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")
+# Diccionario con los consejos diarios
+from consejos_diarios import consejos
 
-# Día actual
-hoy = datetime.now()
-dia_semana = hoy.strftime("%A").lower()
-
-# Cargar consejos
-with open("consejos.json", encoding="utf-8") as f:
-    todos_los_consejos = json.load(f)
-
-consejo = todos_los_consejos.get(dia_semana, {}).get("1", "No hay consejo disponible.")
-
-# Cargar ubicación
-ubicacion = obtener_ubicacion()
-mañana, tarde = calcular_intervalos_optimos(
-    ubicacion["latitud"], ubicacion["longitud"], hoy
-)
-
-texto_intervalos = ""
-if mañana:
-    texto_intervalos += f"🌤️ Por la mañana: {mañana[0]}–{mañana[1]}\n"
-if tarde:
-    texto_intervalos += f"🌇 Por la tarde: {tarde[0]}–{tarde[1]}\n"
-if not texto_intervalos:
-    texto_intervalos = "☁️ Hoy no hay una franja solar entre 30° y 40° antes o después del mediodía.\n"
-
-mensaje = f"""🦠 Consejo inmunológico para hoy (*{dia_semana.title()}*):
-
-{consejo}
-
-☀️ Horarios óptimos de exposición solar en {ubicacion["ciudad"]}:
-{texto_intervalos}
-
-Ten un gran día 🌱
-"""
-
-url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-params = {
-    "chat_id": CHAT_ID,
-    "text": mensaje,
-    "parse_mode": "Markdown"
+# Día de la semana en español
+dias_es = {
+    "monday": "lunes",
+    "tuesday": "martes",
+    "wednesday": "miércoles",
+    "thursday": "jueves",
+    "friday": "viernes",
+    "saturday": "sábado",
+    "sunday": "domingo"
 }
 
-response = requests.get(url, params=params)
-print("✅ Enviado:", response.status_code, response.text)
+# Comprobar si ya se ha enviado hoy
+archivo_envio = "ultimo_envio.txt"
+hoy = date.today()
+
+if os.path.exists(archivo_envio):
+    with open(archivo_envio, "r") as f:
+        ultima_fecha = f.read().strip()
+    if ultima_fecha == hoy.isoformat():
+        print(f"Ya se envió el consejo el {ultima_fecha}, no se vuelve a enviar.")
+        exit()
+
+# Obtener ubicación actual
+ubicacion = obtener_ubicacion()
+lat = ubicacion["latitud"]
+lon = ubicacion["longitud"]
+timezone_str = ubicacion["timezone"]
+
+# Día de la semana
+dia_semana_en = hoy.strftime("%A").lower()
+dia_semana = dias_es[dia_semana_en]
+
+# Seleccionar consejo
+consejos_dia = consejos.get(dia_semana, [])
+
+if not consejos_dia:
+    consejo = f"No hay consejos disponibles para {dia_semana.title()}."
+else:
+    indice = (hoy.toordinal() - date(2025, 7, 29).toordinal()) % len(consejos_dia)
+    consejo = consejos_dia[indice]
+
+# Calcular intervalos solares óptimos
+intervalos = calcular_intervalos_optimos(lat, lon, hoy, timezone_str)
+texto_intervalos = "\n".join([f"• {inicio} – {fin}" for inicio, fin in intervalos]) or "No se encontraron intervalos óptimos."
+
+# Enviar por Telegram
+TOKEN = os.getenv("TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+mensaje = (
+    f"🌞 Consejo para hoy ({dia_semana.title()}):\n\n"
+    f"{consejo}\n\n"
+    f"🕒 Intervalos solares recomendados:\n{texto_intervalos}"
+)
+
+try:
+    response = requests.get(
+        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+        params={"chat_id": CHAT_ID, "text": mensaje}
+    )
+    if response.status_code == 200:
+        print("✅ Consejo enviado con éxito.")
+        with open(archivo_envio, "w") as f:
+            f.write(hoy.isoformat())
+    else:
+        print(f"❌ Error al enviar mensaje: {response.text}")
+except Exception as e:
+    print(f"❌ Excepción al enviar mensaje: {e}")
+
