@@ -1,26 +1,29 @@
-from astral import solar_elevation
+from astral import LocationInfo
+from astral.sun import elevation
 from datetime import datetime, timedelta
 
-def calcular_intervalos_optimos(lat, lon, fecha=None):
-    if fecha is None:
-        fecha = datetime.now()
-    inicio_dia = fecha.replace(hour=0, minute=0, second=0, microsecond=0)
-    intervalos = []
-    paso = timedelta(minutes=5)
+def calcular_intervalos_optimos(ciudad, latitud, longitud, tz):
+    location = LocationInfo(ciudad, "España", tz, latitud, longitud)
 
-    t = inicio_dia
-    while t < inicio_dia + timedelta(days=1):
-        elevacion = solar_elevation(t, lat, lon)
-        if 30 <= elevacion <= 40:
-            intervalos.append(t)
-        t += paso
+    hoy = datetime.now().date()
+    minutos_totales = 24 * 60
+    intervalo = 5  # minutos
+    instantes = [datetime.combine(hoy, datetime.min.time()) + timedelta(minutes=i) for i in range(0, minutos_totales, intervalo)]
 
-    mañana = [h for h in intervalos if h.hour < 12]
-    tarde = [h for h in intervalos if h.hour > 12]
+    intervalos_validos = []
+    intervalo_actual = []
 
-    def reducir_intervalos(lista):
-        if not lista:
-            return None
-        return (lista[0].strftime("%H:%M"), lista[-1].strftime("%H:%M"))
+    for instante in instantes:
+        alt = elevation(instante, location.observer)
+        if 30 <= alt <= 40:
+            intervalo_actual.append(instante)
+        else:
+            if len(intervalo_actual) >= 2:
+                intervalos_validos.append((intervalo_actual[0], intervalo_actual[-1]))
+            intervalo_actual = []
 
-    return reducir_intervalos(mañana), reducir_intervalos(tarde)
+    if len(intervalo_actual) >= 2:
+        intervalos_validos.append((intervalo_actual[0], intervalo_actual[-1]))
+
+    return intervalos_validos
+
