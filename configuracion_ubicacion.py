@@ -1,26 +1,38 @@
+# configuracion_ubicacion.py
+import json
 from geopy.geocoders import Nominatim
-from timezonefinder import TimezoneFinder
+import requests
 
 def obtener_ubicacion():
-    # Puedes cambiar aquí el nombre de la ciudad si quieres fijarlo manualmente
-    ciudad = "Málaga"
+    try:
+        ip_info = requests.get("https://ipinfo.io/json").json()
+        ciudad = ip_info["city"]
+        loc = ip_info["loc"]
+        latitud, longitud = map(float, loc.split(","))
+        print(f"🌍 Ubicación detectada: {ciudad} ({latitud}, {longitud})")
+    except Exception:
+        print("❗ No se pudo detectar la ubicación automáticamente.")
+        ciudad = input("Introduce tu ciudad manualmente: ")
+        geolocator = Nominatim(user_agent="consejos_inmunes")
+        location = geolocator.geocode(ciudad)
+        if not location:
+            print("No se pudo encontrar esa ciudad.")
+            return
+        latitud = location.latitude
+        longitud = location.longitude
 
-    geolocator = Nominatim(user_agent="bot_inmune_diario")
-    location = geolocator.geocode(ciudad)
-
-    if not location:
-        raise ValueError(f"No se pudo obtener la ubicación para la ciudad: {ciudad}")
-
-    tf = TimezoneFinder()
-    timezone = tf.timezone_at(lng=location.longitude, lat=location.latitude)
-
-    if not timezone:
-        raise ValueError("No se pudo determinar la zona horaria.")
-
-    return {
-        "latitud": location.latitude,
-        "longitud": location.longitude,
-        "timezone": timezone
+    datos = {
+        "ciudad": ciudad,
+        "latitud": latitud,
+        "longitud": longitud
     }
+
+    with open("ubicacion.json", "w") as f:
+        json.dump(datos, f)
+
+    print(f"✅ Ubicación guardada: {ciudad} ({latitud}, {longitud})")
+
+if __name__ == "__main__":
+    obtener_ubicacion()
 
 
