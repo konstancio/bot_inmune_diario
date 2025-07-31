@@ -1,53 +1,33 @@
-# calcular_intervalos.py
 from astral import LocationInfo
-from astral.sun import elevation, sun
+from astral.sun import elevation
 from datetime import datetime, timedelta
-import json
-import pytz
 
-def calcular_intervalo():
-    with open("ubicacion.json") as f:
-        datos = json.load(f)
+def calcular_intervalos_optimos(latitud, longitud, hoy=None):
+    if hoy is None:
+        hoy = datetime.now().date()
 
-    ciudad = datos["ciudad"]
-    lat = datos["latitud"]
-    lon = datos["longitud"]
+    ciudad = LocationInfo(name="Ubicacion", region="Ubicacion", timezone="UTC", latitude=latitud, longitude=longitud)
+    hora = datetime(hoy.year, hoy.month, hoy.day, 6, 0)
 
-    loc = LocationInfo(name=ciudad, region="",
-                       timezone="Europe/Madrid", latitude=lat, longitude=lon)
+    intervalo = timedelta(minutes=10)
+    hora_fin = datetime(hoy.year, hoy.month, hoy.day, 22, 0)
 
-    tz = pytz.timezone(loc.timezone)
-    ahora = datetime.now(tz)
-    fecha = ahora.date()
+    antes_del_medio_dia = []
+    despues_del_medio_dia = []
 
-    s = sun(loc.observer, date=fecha, tzinfo=tz)
-    mediodia = s["noon"]
+    while hora <= hora_fin:
+        altitud = elevation(observer=(latitud, longitud), date_and_time=hora)
 
-    intervalo = timedelta(minutes=1)
-    hora = datetime.combine(fecha, datetime.min.time()).replace(tzinfo=tz, hour=6)
-    fin = datetime.combine(fecha, datetime.max.time()).replace(tzinfo=tz, hour=21)
+        if 30 <= altitud <= 40:
+            if hora < datetime(hoy.year, hoy.month, hoy.day, 12, 0):
+                antes_del_medio_dia.append(hora.time())
+            else:
+                despues_del_medio_dia.append(hora.time())
 
-    antes = []
-    despues = []
-
-    while hora <= fin:
-        alt = elevation(loc.observer, hora)
-        if 30 <= alt <= 40:
-            if hora < mediodia:
-                antes.append(hora)
-            elif hora > mediodia:
-                despues.append(hora)
         hora += intervalo
 
-    def formatear(lista):
-        if not lista:
-            return None
-        return f"{lista[0].strftime('%H:%M')} - {lista[-1].strftime('%H:%M')}"
+    return antes_del_medio_dia, despues_del_medio_dia
 
-    return {
-        "ciudad": ciudad,
-        "franja_mañana": formatear(antes),
-        "franja_tarde": formatear(despues)
     }
 
 if __name__ == "__main__":
