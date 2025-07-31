@@ -39,7 +39,7 @@ if not ubicacion or "latitud" not in ubicacion or "longitud" not in ubicacion:
 lat = ubicacion["latitud"]
 lon = ubicacion["longitud"]
 
-timezone_str = ubicacion["timezone"]
+timezone_str = ubicacion["zona_horaria"]
 
 # Día de la semana
 dia_semana_en = hoy.strftime("%A").lower()
