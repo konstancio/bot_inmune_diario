@@ -1,38 +1,37 @@
-# configuracion_ubicacion.py
-import json
+
 from geopy.geocoders import Nominatim
-import requests
+from timezonefinder import TimezoneFinder
 
 def obtener_ubicacion():
+    ciudad = "Groningen"  # Puedes cambiarlo por cualquier otra ciudad predeterminada
+
     try:
-        ip_info = requests.get("https://ipinfo.io/json").json()
-        ciudad = ip_info["city"]
-        loc = ip_info["loc"]
-        latitud, longitud = map(float, loc.split(","))
-        print(f"🌍 Ubicación detectada: {ciudad} ({latitud}, {longitud})")
-    except Exception:
-        print("❗ No se pudo detectar la ubicación automáticamente.")
-        ciudad = input("Introduce tu ciudad manualmente: ")
-        geolocator = Nominatim(user_agent="consejos_inmunes")
+        geolocator = Nominatim(user_agent="bot_inmune_diario")
         location = geolocator.geocode(ciudad)
+        
         if not location:
-            print("No se pudo encontrar esa ciudad.")
-            return
-        latitud = location.latitude
-        longitud = location.longitude
+            print(f"No se encontró la ciudad: {ciudad}")
+            return None
 
-    datos = {
-        "ciudad": ciudad,
-        "latitud": latitud,
-        "longitud": longitud
-    }
+        lat = location.latitude
+        lon = location.longitude
 
-    with open("ubicacion.json", "w") as f:
-        json.dump(datos, f)
+        print(f"✅ Ubicación detectada: {ciudad} ({lat}, {lon})")
 
-    print(f"✅ Ubicación guardada: {ciudad} ({latitud}, {longitud})")
+        # Obtener zona horaria
+        tf = TimezoneFinder()
+        zona_horaria = tf.timezone_at(lat=lat, lng=lon)
 
-if __name__ == "__main__":
-    obtener_ubicacion()
+        print(f"✅ Ubicación guardada: {ciudad} ({lat}, {lon}) - Zona horaria: {zona_horaria}")
+
+        return {
+            "latitud": lat,
+            "longitud": lon,
+            "zona_horaria": zona_horaria
+        }
+
+    except Exception as e:
+        print(f"Error al obtener la ubicación: {e}")
+        return None
 
 
