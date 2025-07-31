@@ -2,7 +2,7 @@ from astral import LocationInfo
 from astral.sun import elevation
 from datetime import datetime, timedelta
 
-def calcular_intervalos_optimos(latitud, longitud, hoy=None):
+def calcular_intervalos_optimos(lat, lon, fecha, timezone_str):
     if hoy is None:
         hoy = datetime.now().date()
 
