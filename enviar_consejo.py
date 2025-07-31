@@ -55,7 +55,8 @@ else:
     consejo = consejos_dia[indice]
 
 # Calcular intervalos solares óptimos
-intervalos = calcular_intervalos_optimos(lat, lon, hoy, timezone_str)
+intervalos = calcular_intervalos_optimos(lat, lon, hoy.date(), timezone_str)
+
 texto_intervalos = "\n".join([f"• {inicio} – {fin}" for inicio, fin in intervalos]) or "No se encontraron intervalos óptimos."
 
 # Enviar por Telegram
