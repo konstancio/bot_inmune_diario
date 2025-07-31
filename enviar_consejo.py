@@ -31,8 +31,14 @@ if os.path.exists(archivo_envio):
 
 # Obtener ubicación actual
 ubicacion = obtener_ubicacion()
+
+if not ubicacion or "latitud" not in ubicacion or "longitud" not in ubicacion:
+    print("Error: No se pudo obtener la ubicación correctamente.")
+    exit(1)
+
 lat = ubicacion["latitud"]
 lon = ubicacion["longitud"]
+
 timezone_str = ubicacion["timezone"]
 
 # Día de la semana
