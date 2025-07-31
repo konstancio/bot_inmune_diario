@@ -28,8 +28,6 @@ def calcular_intervalos_optimos(latitud, longitud, hoy=None):
 
     return antes_del_medio_dia, despues_del_medio_dia
 
-    }
-
 if __name__ == "__main__":
     print(calcular_intervalo())
 
