@@ -1,44 +1,37 @@
 from astral import LocationInfo
-from astral.sun import sun, elevation
+from astral.sun import sun
+from astral.location import Observer
 from datetime import datetime, timedelta
 
 def calcular_intervalos_optimos(lat, lon, hoy=None, timezone_str='Europe/Madrid'):
     if hoy is None:
-        hoy = datetime.now()
+        hoy = datetime.now().date()
 
+    # Crear objeto Observer explícito
+    observador = Observer(latitude=lat, longitude=lon, elevation=0)
+
+    # Crear info de localización con zona horaria
     ciudad = LocationInfo(name="Ciudad", region="Región", timezone=timezone_str, latitude=lat, longitude=lon)
-    s = sun(ciudad.observer, date=hoy.date(), tzinfo=ciudad.timezone)
+
+    # Calcular eventos solares
+    s = sun(observer=observador, date=hoy, tzinfo=ciudad.timezone)
 
     elevaciones = []
     hora_actual = s['sunrise']
     fin = s['sunset']
 
     while hora_actual <= fin:
-        altitud = elevation(lat, lon, hora_actual)
+        altitud = ciudad.solar_elevation(hora_actual)
         if 30 <= altitud <= 40:
-            elevaciones.append(hora_actual)
+            elevaciones.append(hora_actual.strftime('%H:%M'))
         hora_actual += timedelta(minutes=10)
 
-    # Separar antes y después del mediodía solar
+    # Dividir los intervalos en antes y después del mediodía solar
     mediodia = s['noon']
-    antes = [h for h in elevaciones if h <= mediodia]
-    despues = [h for h in elevaciones if h > mediodia]
+    antes = [h for h in elevaciones if datetime.strptime(h, '%H:%M').time() <= mediodia.time()]
+    despues = [h for h in elevaciones if datetime.strptime(h, '%H:%M').time() > mediodia.time()]
 
-    # Agrupar en intervalos contiguos
-    def agrupar_intervalos(lista):
-        if not lista:
-            return []
-        intervalos = []
-        inicio = anterior = lista[0]
-        for hora in lista[1:]:
-            if (hora - anterior).seconds > 600:  # más de 10 minutos sin datos = nuevo bloque
-                intervalos.append((inicio, anterior + timedelta(minutes=10)))
-                inicio = hora
-            anterior = hora
-        intervalos.append((inicio, anterior + timedelta(minutes=10)))
-        return intervalos
-
-    return agrupar_intervalos(antes) + agrupar_intervalos(despues)
+    return antes, despues
 
 
 
