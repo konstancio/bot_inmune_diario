@@ -3,7 +3,13 @@ from geopy.geocoders import Nominatim
 from timezonefinder import TimezoneFinder
 
 def obtener_ubicacion():
-    ciudad = "Groningen"  # Puedes cambiarlo por cualquier otra ciudad predeterminada
+    {
+    "latitud": 36.7213,
+    "longitud": -4.4214,
+    "ciudad": "Málaga",
+    "timezone": "Europe/Madrid"
+}
+
 
     try:
         geolocator = Nominatim(user_agent="bot_inmune_diario")
