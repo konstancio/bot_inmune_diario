@@ -1,29 +1,37 @@
-from astral.sun import sun, elevation
-from astral.location import Observer
+
+from astral import LocationInfo
+from astral.sun import sun
+from astral.geocoder import lookup, database
+from astral.location import Location
 from datetime import datetime, timedelta
+from astral import solar
 
 def calcular_intervalos_optimos(lat, lon, hoy=None, timezone_str='Europe/Madrid'):
     if hoy is None:
         hoy = datetime.now().date()
-    elif isinstance(hoy, datetime):
+    else:
         hoy = hoy.date()
 
-    observer = Observer(latitude=lat, longitude=lon)
-    s = sun(observer, date=hoy, tzinfo=timezone_str)
+    # Crear una ubicación personalizada
+    ubicacion = LocationInfo(name="Personalizada", region="España", timezone=timezone_str, latitude=lat, longitude=lon)
+    ciudad = Location(ubicacion)
 
-    elevaciones = []
-    hora_actual = s['sunrise']
-    fin = s['sunset']
+    elevaciones_validas = []
+    hora_actual = ciudad.sunrise(hoy)
+    fin = ciudad.sunset(hoy)
 
     while hora_actual <= fin:
-        altitud = elevation(observer, hora_actual)
-        if 30 <= altitud <= 40:
-            elevaciones.append(hora_actual.strftime('%H:%M'))
+        elevacion = ciudad.solar_elevation(hora_actual)
+
+        if 30 <= elevacion <= 40:
+            elevaciones_validas.append(hora_actual.strftime('%H:%M'))
+
         hora_actual += timedelta(minutes=10)
 
-    mediodia = s['noon']
-    antes = [h for h in elevaciones if datetime.strptime(h, '%H:%M').time() <= mediodia.time()]
-    despues = [h for h in elevaciones if datetime.strptime(h, '%H:%M').time() > mediodia.time()]
+    # Separar en intervalos antes y después del mediodía solar
+    mediodia = ciudad.noon(hoy)
+    antes = [h for h in elevaciones_validas if datetime.strptime(h, "%H:%M").time() <= mediodia.time()]
+    despues = [h for h in elevaciones_validas if datetime.strptime(h, "%H:%M").time() > mediodia.time()]
 
     return antes, despues
 
