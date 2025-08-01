@@ -1,33 +1,29 @@
 from astral import LocationInfo
-from astral.sun import elevation
-from datetime import datetime, timedelta
+from astral.sun import sun
+from datetime import datetime, timedelta, timezone
 
-def calcular_intervalos_optimos(lat, lon, fecha, timezone_str):
+def calcular_intervalos_optimos(lat, lon, hoy=None, timezone_str='Europe/Madrid'):
     if hoy is None:
         hoy = datetime.now().date()
 
-    ciudad = LocationInfo(name="Ubicacion", region="Ubicacion", timezone="UTC", latitude=latitud, longitude=longitud)
-    hora = datetime(hoy.year, hoy.month, hoy.day, 6, 0)
+    ciudad = LocationInfo(name="Ciudad", region="Región", timezone=timezone_str, latitude=lat, longitude=lon)
+    s = sun(ciudad.observer, date=hoy, tzinfo=ciudad.timezone)
 
-    intervalo = timedelta(minutes=10)
-    hora_fin = datetime(hoy.year, hoy.month, hoy.day, 22, 0)
+    elevaciones = []
+    hora_actual = s['sunrise']
+    fin = s['sunset']
 
-    antes_del_medio_dia = []
-    despues_del_medio_dia = []
-
-    while hora <= hora_fin:
-        altitud = elevation(observer=(latitud, longitud), date_and_time=hora)
-
+    while hora_actual <= fin:
+        altitud = ciudad.solar_elevation(hora_actual)
         if 30 <= altitud <= 40:
-            if hora < datetime(hoy.year, hoy.month, hoy.day, 12, 0):
-                antes_del_medio_dia.append(hora.time())
-            else:
-                despues_del_medio_dia.append(hora.time())
+            elevaciones.append(hora_actual.strftime('%H:%M'))
+        hora_actual += timedelta(minutes=10)
 
-        hora += intervalo
+    # Dividir los intervalos en antes y después del mediodía solar
+    mediodia = s['noon']
+    antes = [h for h in elevaciones if datetime.strptime(h, '%H:%M').time() <= mediodia.time()]
+    despues = [h for h in elevaciones if datetime.strptime(h, '%H:%M').time() > mediodia.time()]
 
-    return antes_del_medio_dia, despues_del_medio_dia
+    return antes, despues
 
-if __name__ == "__main__":
-    print(calcular_intervalo())
 
