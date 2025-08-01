@@ -79,7 +79,23 @@ intervalos = calcular_intervalos_optimos(lat, lon, hoy, timezone_str)
 mensaje = f"{consejo_dia}\n\n☀️ Intervalos solares seguros para hoy en {ciudad}:\n"
 
 if intervalos:
-    for inicio, fin in intervalos:
+    antes, despues = intervalos
+
+mensaje = f"{consejo_dia}\n\n☀️ Intervalos solares seguros para hoy ({ubicacion['ciudad']}):\n"
+
+if antes:
+    mensaje += "🌅 Mañana:\n"
+    for hora in antes:
+        mensaje += f"🕒 {hora}\n"
+
+if despues:
+    mensaje += "🌇 Tarde:\n"
+    for hora in despues:
+        mensaje += f"🕒 {hora}\n"
+
+if not antes and not despues:
+    mensaje += "Hoy no hay intervalos seguros con el Sol entre 30° y 40° de elevación."
+
         mensaje += f"🕒 {inicio.strftime('%H:%M')} - {fin.strftime('%H:%M')}\n"
 else:
     mensaje += "Hoy no hay intervalos seguros con el Sol entre 30° y 40° de elevación."
