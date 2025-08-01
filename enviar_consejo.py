@@ -1,8 +1,9 @@
 import datetime
 import random
+import os
 from consejos_diarios import consejos
 from calcular_intervalos import calcular_intervalos_optimos
-from telegram_send import send
+from telegram import Bot
 from geopy.geocoders import Nominatim
 from timezonefinder import TimezoneFinder
 import requests
@@ -22,7 +23,6 @@ def obtener_ubicacion():
             raise ValueError("Datos incompletos desde IP. Se usará fallback.")
 
         print(f"✅ Ubicación detectada: {ciudad} ({lat}, {lon})")
-
     except Exception as e:
         print(f"⚠️ Error al obtener ubicación por IP: {e}")
         print("🔁 Usando ubicación por defecto: Málaga")
@@ -54,29 +54,29 @@ def obtener_ubicacion():
         "timezone": zona_horaria
     }
 
-# Obtener ubicación al arrancar
+# Obtener ubicación
 ubicacion = obtener_ubicacion()
-
 if not ubicacion:
-    print("Error: No se pudo obtener la ubicación correctamente.")
+    print("❌ No se pudo obtener la ubicación. Abortando.")
     exit()
 
 lat = ubicacion["latitud"]
 lon = ubicacion["longitud"]
+ciudad = ubicacion["ciudad"]
 timezone_str = ubicacion["timezone"]
 
-# Día de la semana actual
+# Día de la semana actual (lunes=0, ..., domingo=6)
 hoy = datetime.datetime.now()
-dia_semana = hoy.weekday()  # lunes = 0, domingo = 6
+dia_semana = hoy.weekday()
 
-# Elegir consejo aleatorio según el día
+# Consejo aleatorio para el día
 consejo_dia = random.choice(consejos[dia_semana])
 
-# Calcular intervalos óptimos de exposición solar
+# Calcular intervalos solares óptimos
 intervalos = calcular_intervalos_optimos(lat, lon, hoy, timezone_str)
 
-# Construir mensaje
-mensaje = f"{consejo_dia}\n\n☀️ Intervalos solares seguros para hoy ({ubicacion['ciudad']}):\n"
+# Formar mensaje
+mensaje = f"{consejo_dia}\n\n☀️ Intervalos solares seguros para hoy en {ciudad}:\n"
 
 if intervalos:
     for inicio, fin in intervalos:
@@ -85,21 +85,21 @@ else:
     mensaje += "Hoy no hay intervalos seguros con el Sol entre 30° y 40° de elevación."
 
 # Enviar mensaje por Telegram
-from telegram import Bot
-import os
-
 def enviar_mensaje_telegram(texto):
     bot_token = os.getenv("BOT_TOKEN")
     chat_id = os.getenv("CHAT_ID")
 
     if not bot_token or not chat_id:
-        print("Faltan BOT_TOKEN o CHAT_ID")
+        print("❌ Faltan BOT_TOKEN o CHAT_ID")
         return
 
     bot = Bot(token=bot_token)
     bot.send_message(chat_id=chat_id, text=texto)
+    print("✅ Consejo enviado por Telegram")
 
+# Ejecutar envío
 enviar_mensaje_telegram(mensaje)
+
 
 
 
