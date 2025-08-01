@@ -30,3 +30,4 @@ def calcular_intervalos_optimos(lat, lon, hoy=None, timezone_str='Europe/Madrid'
 
 
 
+
