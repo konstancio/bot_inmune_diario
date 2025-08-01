@@ -1,12 +1,13 @@
+
 import datetime
 import random
-import os
 from consejos_diarios import consejos
 from calcular_intervalos import calcular_intervalos_optimos
-from telegram import Bot
 from geopy.geocoders import Nominatim
 from timezonefinder import TimezoneFinder
 import requests
+from telegram import Bot
+import os
 
 # Función para detectar ubicación con fallback a Málaga
 def obtener_ubicacion():
@@ -23,6 +24,7 @@ def obtener_ubicacion():
             raise ValueError("Datos incompletos desde IP. Se usará fallback.")
 
         print(f"✅ Ubicación detectada: {ciudad} ({lat}, {lon})")
+
     except Exception as e:
         print(f"⚠️ Error al obtener ubicación por IP: {e}")
         print("🔁 Usando ubicación por defecto: Málaga")
@@ -56,31 +58,27 @@ def obtener_ubicacion():
 
 # Obtener ubicación
 ubicacion = obtener_ubicacion()
+
 if not ubicacion:
-    print("❌ No se pudo obtener la ubicación. Abortando.")
+    print("Error: No se pudo obtener la ubicación correctamente.")
     exit()
 
 lat = ubicacion["latitud"]
 lon = ubicacion["longitud"]
-ciudad = ubicacion["ciudad"]
 timezone_str = ubicacion["timezone"]
 
-# Día de la semana actual (lunes=0, ..., domingo=6)
+# Día de la semana actual
 hoy = datetime.datetime.now()
-dia_semana = hoy.weekday()
+dia_semana = hoy.weekday()  # lunes = 0, domingo = 6
 
-# Consejo aleatorio para el día
+# Elegir consejo aleatorio según el día
 consejo_dia = random.choice(consejos[dia_semana])
 
-# Calcular intervalos solares óptimos
+# Calcular intervalos óptimos de exposición solar
 intervalos = calcular_intervalos_optimos(lat, lon, hoy, timezone_str)
+antes, despues = intervalos
 
-# Formar mensaje
-mensaje = f"{consejo_dia}\n\n☀️ Intervalos solares seguros para hoy en {ciudad}:\n"
-
-if intervalos:
-    antes, despues = intervalos
-
+# Construir mensaje
 mensaje = f"{consejo_dia}\n\n☀️ Intervalos solares seguros para hoy ({ubicacion['ciudad']}):\n"
 
 if antes:
@@ -96,28 +94,17 @@ if despues:
 if not antes and not despues:
     mensaje += "Hoy no hay intervalos seguros con el Sol entre 30° y 40° de elevación."
 
-        mensaje += f"🕒 {inicio.strftime('%H:%M')} - {fin.strftime('%H:%M')}\n"
-else:
-    mensaje += "Hoy no hay intervalos seguros con el Sol entre 30° y 40° de elevación."
-
 # Enviar mensaje por Telegram
 def enviar_mensaje_telegram(texto):
     bot_token = os.getenv("BOT_TOKEN")
     chat_id = os.getenv("CHAT_ID")
 
     if not bot_token or not chat_id:
-        print("❌ Faltan BOT_TOKEN o CHAT_ID")
+        print("Faltan BOT_TOKEN o CHAT_ID")
         return
 
     bot = Bot(token=bot_token)
     bot.send_message(chat_id=chat_id, text=texto)
-    print("✅ Consejo enviado por Telegram")
 
-# Ejecutar envío
+# Ejecutar el envío
 enviar_mensaje_telegram(mensaje)
-
-
-
-
-
-
