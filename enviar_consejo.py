@@ -99,6 +99,9 @@ def enviar_mensaje_telegram(texto):
     bot = Bot(token=bot_token)
     bot.send_message(chat_id=chat_id, text=texto)
 
+enviar_mensaje_telegram(mensaje)
+
+
 
 
 
