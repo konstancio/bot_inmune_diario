@@ -85,7 +85,20 @@ else:
     mensaje += "Hoy no hay intervalos seguros con el Sol entre 30° y 40° de elevación."
 
 # Enviar mensaje por Telegram
-send(messages=[mensaje])
+from telegram import Bot
+import os
+
+def enviar_mensaje_telegram(texto):
+    bot_token = os.getenv("BOT_TOKEN")
+    chat_id = os.getenv("CHAT_ID")
+
+    if not bot_token or not chat_id:
+        print("Faltan BOT_TOKEN o CHAT_ID")
+        return
+
+    bot = Bot(token=bot_token)
+    bot.send_message(chat_id=chat_id, text=texto)
+
 
 
 
