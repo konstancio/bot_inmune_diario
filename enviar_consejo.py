@@ -8,6 +8,8 @@ from timezonefinder import TimezoneFinder
 import requests
 from telegram import Bot
 from telegram.request import HTTPXRequest
+import asyncio
+from telegram import Bot
 
 import os
 
@@ -108,11 +110,12 @@ def enviar_mensaje_telegram(texto):
         print("Faltan BOT_TOKEN o CHAT_ID")
         return
 
+    async def enviar():
+        bot = Bot(token=bot_token)
+        await bot.send_message(chat_id=chat_id, text=texto)
+
     try:
-        # Este request evita problemas con asyncio
-        request = HTTPXRequest()
-        bot = Bot(token=bot_token, request=request)
-        bot.send_message(chat_id=chat_id, text=texto)
+        asyncio.run(enviar())
         print("✅ Mensaje enviado por Telegram correctamente.")
     except Exception as e:
         print(f"❌ Error al enviar el mensaje por Telegram: {e}")
