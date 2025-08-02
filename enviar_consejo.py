@@ -28,14 +28,16 @@ else:
 hoy = datetime.datetime.now()
 dia_semana = hoy.weekday()  # lunes = 0, domingo = 6
 
-# Consejo del día
-consejo_dia = random.choice(consejos[dia_semana])
+# Elegir consejo aleatorio según el día (parejas: consejo + referencia)
+opciones = consejos[dia_semana]
+consejo_dia = random.choice([opciones[i:i+2] for i in range(0, len(opciones), 2)])
+texto_consejo = f"{consejo_dia[0]}\n\n{consejo_dia[1]}"
 
 # Calcular intervalos solares óptimos
 antes, despues = calcular_intervalos_optimos(lat, lon, hoy, timezone_str)
 
 # Construcción del mensaje
-mensaje = f"{consejo_dia}\n\n☀️ Intervalos solares seguros para producir vit. D hoy ({ciudad}):\n"
+mensaje = f"{texto_consejo}\n\n☀️ Intervalos solares seguros para producir vit. D hoy ({ubicacion['ciudad']}):\n"
 
 if antes:
     mensaje += f"🌅 Mañana: {antes[0]} – {antes[-1]}\n"
