@@ -7,6 +7,8 @@ from geopy.geocoders import Nominatim
 from timezonefinder import TimezoneFinder
 import requests
 from telegram import Bot
+from telegram.request import HTTPXRequest
+
 import os
 
 # Función para detectar ubicación con fallback a Málaga
@@ -107,7 +109,9 @@ def enviar_mensaje_telegram(texto):
         return
 
     try:
-        bot = Bot(token=bot_token)
+        # Este request evita problemas con asyncio
+        request = HTTPXRequest()
+        bot = Bot(token=bot_token, request=request)
         bot.send_message(chat_id=chat_id, text=texto)
         print("✅ Mensaje enviado por Telegram correctamente.")
     except Exception as e:
