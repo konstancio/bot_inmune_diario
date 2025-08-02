@@ -94,17 +94,26 @@ if despues:
 if not antes and not despues:
     mensaje += "Hoy no hay intervalos seguros con el Sol entre 30° y 40° de elevación."
 
-# Enviar mensaje por Telegram
-def enviar_mensaje_telegram(texto):
-    BOT_TOKEN = os.getenv("7254029750:AAG-ukM8YXZ-9Fq7YhcMj2A8ny6Gz92TQvE")
-    CHAT_ID = os.getenv("7678609")
+from telegram import Bot
+import os
 
+# Obtener variables de entorno globalmente
+bot_token = os.getenv("BOT_TOKEN")
+chat_id = os.getenv("CHAT_ID")
+
+def enviar_mensaje_telegram(texto):
     if not bot_token or not chat_id:
         print("Faltan BOT_TOKEN o CHAT_ID")
         return
 
-    bot = Bot(token=bot_token)
-    bot.send_message(chat_id=chat_id, text=texto)
+    try:
+        bot = Bot(token=bot_token)
+        bot.send_message(chat_id=chat_id, text=texto)
+        print("✅ Mensaje enviado por Telegram correctamente.")
+    except Exception as e:
+        print(f"❌ Error al enviar el mensaje por Telegram: {e}")
 
-# Ejecutar el envío
+# Llamada final para enviar el mensaje
 enviar_mensaje_telegram(mensaje)
+
+
