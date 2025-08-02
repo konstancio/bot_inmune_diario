@@ -96,8 +96,8 @@ if not antes and not despues:
 
 # Enviar mensaje por Telegram
 def enviar_mensaje_telegram(texto):
-    bot_token = os.getenv("7254029750:AAG-ukM8YXZ-9Fq7YhcMj2A8ny6Gz92TQvE")
-    chat_id = os.getenv("7678609")
+    BOT_TOKEN = os.getenv("7254029750:AAG-ukM8YXZ-9Fq7YhcMj2A8ny6Gz92TQvE")
+    CHAT_ID = os.getenv("7678609")
 
     if not bot_token or not chat_id:
         print("Faltan BOT_TOKEN o CHAT_ID")
