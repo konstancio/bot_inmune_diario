@@ -79,8 +79,9 @@ timezone_str = ubicacion["timezone"]
 
 hoy = datetime.datetime.now()
 dia_semana = hoy.weekday()  # lunes = 0, domingo = 6
-conjunto_consejo = random.sample(consejos[dia_semana], 2)
-texto_consejo, referencia = conjunto_consejo
+conjunto = random.sample(consejos[dia_semana], 2)
+texto_consejo = next(x for x in conjunto if not x.startswith("📚"))
+referencia = next(x for x in conjunto if x.startswith("📚"))
 
 # ─────────────────────────────────────────────────────────────
 # ☀️ CÁLCULO DE INTERVALOS SOLARES ÓPTIMOS
