@@ -14,7 +14,17 @@ from calcular_intervalos import calcular_intervalos_optimos
 # 📍 DETECCIÓN DE UBICACIÓN AUTOMÁTICA (CON FALLBACK A MÁLAGA)
 # ─────────────────────────────────────────────────────────────
 
+from geopy.geocoders import Nominatim
+from timezonefinder import TimezoneFinder
+import requests
+
 def obtener_ubicacion():
+    # Coordenadas fijas de Málaga
+    fallback_ciudad = "Málaga"
+    fallback_lat = 36.7213
+    fallback_lon = -4.4214
+    fallback_timezone = "Europe/Madrid"
+
     try:
         ip = requests.get("https://api.ipify.org").text
         response = requests.get(f"https://ipapi.co/{ip}/json/")
@@ -25,33 +35,28 @@ def obtener_ubicacion():
         lon = data.get("longitude")
 
         if not ciudad or not lat or not lon:
-            raise ValueError("Datos incompletos desde IP. Se usará fallback.")
+            raise ValueError("Datos incompletos desde IP")
 
-        print(f"✅ Ubicación detectada: {ciudad} ({lat}, {lon})")
+        print(f"✅ Ubicación detectada por IP: {ciudad} ({lat}, {lon})")
+
+        # Si se detecta una ciudad distinta de Málaga, forzar fallback
+        if ciudad.lower() != "málaga":
+            raise ValueError("Ubicación distinta de Málaga")
 
     except Exception as e:
-        print(f"⚠️ Error al obtener ubicación por IP: {e}")
-        print("🔁 Usando ubicación por defecto: Málaga")
-        ciudad = "Málaga"
-        geolocator = Nominatim(user_agent="bot_inmune_diario")
-        location = geolocator.geocode(ciudad)
-
-        if not location:
-            print("❌ No se pudo geolocalizar Málaga. Abortando.")
-            return None
-
-        lat = location.latitude
-        lon = location.longitude
-        print(f"✅ Ubicación por defecto: {ciudad} ({lat}, {lon})")
+        print(f"⚠️ Error o ubicación no deseada ({e}). Usando fallback a Málaga.")
+        ciudad = fallback_ciudad
+        lat = fallback_lat
+        lon = fallback_lon
 
     try:
         tf = TimezoneFinder()
-        zona_horaria = tf.timezone_at(lat=lat, lng=lon)
+        zona_horaria = tf.timezone_at(lat=lat, lng=lon) or fallback_timezone
     except Exception as e:
         print(f"❌ Error al obtener la zona horaria: {e}")
-        zona_horaria = "Europe/Madrid"
+        zona_horaria = fallback_timezone
 
-    print(f"✅ Ubicación guardada: {ciudad} ({lat}, {lon}) - Zona horaria: {zona_horaria}")
+    print(f"✅ Ubicación final: {ciudad} ({lat}, {lon}) - Zona horaria: {zona_horaria}")
 
     return {
         "latitud": lat,
