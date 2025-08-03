@@ -1,53 +1,110 @@
 import datetime
 import random
-from consejos_diarios import consejos
-from calcular_intervalos import calcular_intervalos_optimos
-from geopy.geocoders import Nominatim
-from timezonefinder import TimezoneFinder
+import os
+import asyncio
 import requests
 from telegram import Bot
-import asyncio
-import os
+from timezonefinder import TimezoneFinder
+from geopy.geocoders import Nominatim
 
-# Obtener ciudad desde variable de entorno (forzamos Málaga)
-ciudad = os.environ.get("CIUDAD", "Málaga")
-geolocalizador = Nominatim(user_agent="obtener_ubicacion")
-ubicacion_geo = geolocalizador.geocode(ciudad)
+from consejos_diarios import consejos
+from calcular_intervalos import calcular_intervalos_optimos
 
-if ubicacion_geo:
-    lat = ubicacion_geo.latitude
-    lon = ubicacion_geo.longitude
-    tf = TimezoneFinder()
-    timezone_str = tf.timezone_at(lat=lat, lng=lon)
-    print(f"✅ Ubicación guardada: {ciudad} ({lat}, {lon}) - Zona horaria: {timezone_str}")
-else:
-    print("❌ No se pudo encontrar la ciudad. Abortando.")
+# ─────────────────────────────────────────────────────────────
+# 📍 DETECCIÓN DE UBICACIÓN AUTOMÁTICA (CON FALLBACK A MÁLAGA)
+# ─────────────────────────────────────────────────────────────
+
+def obtener_ubicacion():
+    try:
+        ip = requests.get("https://api.ipify.org").text
+        response = requests.get(f"https://ipapi.co/{ip}/json/")
+        data = response.json()
+
+        ciudad = data.get("city")
+        lat = data.get("latitude")
+        lon = data.get("longitude")
+
+        if not ciudad or not lat or not lon:
+            raise ValueError("Datos incompletos desde IP. Se usará fallback.")
+
+        print(f"✅ Ubicación detectada: {ciudad} ({lat}, {lon})")
+
+    except Exception as e:
+        print(f"⚠️ Error al obtener ubicación por IP: {e}")
+        print("🔁 Usando ubicación por defecto: Málaga")
+        ciudad = "Málaga"
+        geolocator = Nominatim(user_agent="bot_inmune_diario")
+        location = geolocator.geocode(ciudad)
+
+        if not location:
+            print("❌ No se pudo geolocalizar Málaga. Abortando.")
+            return None
+
+        lat = location.latitude
+        lon = location.longitude
+        print(f"✅ Ubicación por defecto: {ciudad} ({lat}, {lon})")
+
+    try:
+        tf = TimezoneFinder()
+        zona_horaria = tf.timezone_at(lat=lat, lng=lon)
+    except Exception as e:
+        print(f"❌ Error al obtener la zona horaria: {e}")
+        zona_horaria = "Europe/Madrid"
+
+    print(f"✅ Ubicación guardada: {ciudad} ({lat}, {lon}) - Zona horaria: {zona_horaria}")
+
+    return {
+        "latitud": lat,
+        "longitud": lon,
+        "ciudad": ciudad,
+        "timezone": zona_horaria
+    }
+
+# ─────────────────────────────────────────────────────────────
+# 🌍 OBTENER UBICACIÓN
+# ─────────────────────────────────────────────────────────────
+
+ubicacion = obtener_ubicacion()
+if not ubicacion:
+    print("Error: No se pudo obtener la ubicación correctamente.")
     exit()
 
-# Día actual
+lat = ubicacion["latitud"]
+lon = ubicacion["longitud"]
+timezone_str = ubicacion["timezone"]
+
+# ─────────────────────────────────────────────────────────────
+# 📅 CONSEJO DIARIO Y REFERENCIA
+# ─────────────────────────────────────────────────────────────
+
 hoy = datetime.datetime.now()
 dia_semana = hoy.weekday()  # lunes = 0, domingo = 6
+conjunto_consejo = random.sample(consejos[dia_semana], 2)
+texto_consejo, referencia = conjunto_consejo
 
-# Elegir consejo aleatorio según el día (parejas: consejo + referencia)
-opciones = consejos[dia_semana]
-consejo_dia = random.choice([opciones[i:i+2] for i in range(0, len(opciones), 2)])
-texto_consejo = f"{consejo_dia[0]}\n\n{consejo_dia[1]}"
+# ─────────────────────────────────────────────────────────────
+# ☀️ CÁLCULO DE INTERVALOS SOLARES ÓPTIMOS
+# ─────────────────────────────────────────────────────────────
 
-# Calcular intervalos solares óptimos
 antes, despues = calcular_intervalos_optimos(lat, lon, hoy, timezone_str)
 
-# Construcción del mensaje
-mensaje = f"{texto_consejo}\n\n☀️ Intervalos solares seguros para producir vit. D hoy ({ubicacion['ciudad']}):\n"
+# ─────────────────────────────────────────────────────────────
+# 🧾 CONSTRUCCIÓN DEL MENSAJE
+# ─────────────────────────────────────────────────────────────
+
+mensaje = f"{texto_consejo}\n\n{referencia}\n\n☀️ Intervalos solares seguros para producir vit. D hoy ({ubicacion['ciudad']}):\n"
 
 if antes:
     mensaje += f"🌅 Mañana: {antes[0]} – {antes[-1]}\n"
 if despues:
     mensaje += f"🌇 Tarde: {despues[0]} – {despues[-1]}\n"
-
 if not antes and not despues:
     mensaje += "Hoy no hay intervalos seguros con el Sol entre 30° y 40° de elevación."
 
-# Envío a Telegram
+# ─────────────────────────────────────────────────────────────
+# 📲 ENVÍO POR TELEGRAM
+# ─────────────────────────────────────────────────────────────
+
 bot_token = os.getenv("BOT_TOKEN")
 chat_id = os.getenv("CHAT_ID")
 
@@ -66,8 +123,12 @@ def enviar_mensaje_telegram(texto):
     except Exception as e:
         print(f"❌ Error al enviar el mensaje por Telegram: {e}")
 
-# Ejecutar envío
+# ─────────────────────────────────────────────────────────────
+# 🚀 EJECUCIÓN
+# ─────────────────────────────────────────────────────────────
+
 enviar_mensaje_telegram(mensaje)
+
 
 
 
