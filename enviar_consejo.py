@@ -9,6 +9,14 @@ from telegram import Bot
 import asyncio
 import os
 
+consejos_estacionales = {
+    "invierno": "🌰 Consejo nutricional: Incluye pescados grasos (sardinas, caballa) y lácteos/enriquecidos.",
+    "primavera": "🥚 Consejo nutricional: Huevos, setas expuestas al sol y alimentos fortificados.",
+    "verano": "🐟 Consejo nutricional: Atún, yema de huevo; si no hay sol, valora alimentos enriquecidos.",
+    "otoño": "🧀 Consejo nutricional: Quesos curados, hígado de bacalao; consulta suplementos si procede."
+}
+
+
 def obtener_nubosidad_horaria(lat, lon, timezone_str, fecha):
     """
     Devuelve lista de tuplas (hora: datetime, cloudcover: int, precip_prob: int)
@@ -121,6 +129,20 @@ antes, despues = intervalos
 nubosidad_hoy = obtener_nubosidad_horaria(lat, lon, timezone_str, hoy.date())
 
 # Construcción del mensaje
+# Determinar estación (usaremos el consejo si no hay tramos o si hay nubosidad muy alta)
+mes = hoy.month
+if mes in [12, 1, 2]:
+    estacion = "invierno"
+elif mes in [3, 4, 5]:
+    estacion = "primavera"
+elif mes in [6, 7, 8]:
+    estacion = "verano"
+else:
+    estacion = "otoño"
+
+consejo_estacion = consejos_estacionales[estacion]
+
+
 mensaje = f"{texto_consejo}\n\n{referencia}\n\n"
 mensaje += f"🌞 Intervalos solares seguros para producir vit. D hoy ({ubicacion['ciudad']}):\n"
 
@@ -150,6 +172,25 @@ if despues:
 
 if not antes and not despues:
     mensaje += "Hoy el Sol no alcanza 30° de elevación. Aprovecha para descansar, hidratarte y cuidar tu alimentación ☕🍊.\n"
+
+# Aviso adicional si hay nubosidad muy alta (>= 90%) en algún tramo válido
+nubes_m_alta = False
+nubes_t_alta = False
+if antes:
+    nubes_m = resumen_nubes(nubosidad_horaria=nubosidad_hoy,
+                             inicio_dt=hora_hhmm_a_dt(antes[0], hoy.date()),
+                             fin_dt=hora_hhmm_a_dt(antes[-1], hoy.date()))
+    nubes_m_alta = bool(nubes_m and nubes_m[1] >= 90)  # nubes_m[1] = media_nubes %
+
+if despues:
+    nubes_t = resumen_nubes(nubosidad_horaria=nubosidad_hoy,
+                             inicio_dt=hora_hhmm_a_dt(despues[0], hoy.date()),
+                             fin_dt=hora_hhmm_a_dt(despues[-1], hoy.date()))
+    nubes_t_alta = bool(nubes_t and nubes_t[1] >= 90)
+
+if (antes and nubes_m_alta) or (despues and nubes_t_alta):
+    mensaje += f"⚠️ Nubosidad muy alta en el/los tramo(s). La síntesis cutánea de vit. D puede ser baja.\n{consejo_estacion}\n"
+
 
 
 # ✉️ Enviar por Telegram
