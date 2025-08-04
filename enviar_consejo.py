@@ -1,26 +1,69 @@
-import datetime
+import os
+import asyncio
 import random
-from consejos_diarios import consejos
-from calcular_intervalos import calcular_intervalos_optimos
-from geopy.geocoders import Nominatim
-from timezonefinder import TimezoneFinder
+import datetime
 import requests
 from telegram import Bot
-import asyncio
-import os
+from timezonefinder import TimezoneFinder
+from geopy.geocoders import Nominatim
 
-consejos_estacionales = {
-    "invierno": "🌰 Consejo nutricional: Incluye pescados grasos (sardinas, caballa) y lácteos/enriquecidos.",
-    "primavera": "🥚 Consejo nutricional: Huevos, setas expuestas al sol y alimentos fortificados.",
-    "verano": "🐟 Consejo nutricional: Atún, yema de huevo; si no hay sol, valora alimentos enriquecidos.",
-    "otoño": "🧀 Consejo nutricional: Quesos curados, hígado de bacalao; consulta suplementos si procede."
-}
+from consejos_diarios import consejos
+from calcular_intervalos import calcular_intervalos_optimos
 
+# ─────────────────────────────────────────────
+# 1) Ubicación robusta (forzar Málaga si es necesario)
+# ─────────────────────────────────────────────
+def obtener_ubicacion():
+    # Fallback fijo a Málaga
+    fallback_ciudad = "Málaga"
+    fallback_lat = 36.7213
+    fallback_lon = -4.4214
+    fallback_tz = "Europe/Madrid"
 
+    try:
+        ip = requests.get("https://api.ipify.org", timeout=5).text
+        resp = requests.get(f"https://ipapi.co/{ip}/json/", timeout=8)
+        data = resp.json()
+        ciudad = data.get("city")
+        lat = data.get("latitude")
+        lon = data.get("longitude")
+
+        if not ciudad or not lat or not lon:
+            raise ValueError("Datos IP incompletos")
+
+        print(f"✅ Ubicación por IP: {ciudad} ({lat}, {lon})")
+
+        # Si la ciudad no es Málaga, forzamos fallback
+        if ciudad.lower() != "málaga":
+            raise ValueError("Ciudad distinta de Málaga")
+
+    except Exception as e:
+        print(f"⚠️ Error/ubicación no deseada ({e}). Usando fallback a Málaga.")
+        ciudad = fallback_ciudad
+        lat = fallback_lat
+        lon = fallback_lon
+
+    try:
+        tf = TimezoneFinder()
+        tz = tf.timezone_at(lat=lat, lng=lon) or fallback_tz
+    except Exception:
+        tz = fallback_tz
+
+    print(f"✅ Ubicación final: {ciudad} ({lat:.4f}, {lon:.4f}) - TZ: {tz}")
+
+    return {
+        "latitud": float(lat),
+        "longitud": float(lon),
+        "ciudad": ciudad,
+        "timezone": tz
+    }
+
+# ─────────────────────────────────────────────
+# 2) Meteo: nubosidad/lluvia (Open‑Meteo, sin API key)
+# ─────────────────────────────────────────────
 def obtener_nubosidad_horaria(lat, lon, timezone_str, fecha):
     """
-    Devuelve lista de tuplas (hora: datetime, cloudcover: int, precip_prob: int)
-    para el día 'fecha' en la zona horaria 'timezone_str'. Usa Open-Meteo (sin API key).
+    Devuelve lista de (dt, cloudcover%, precip_prob%) para la fecha dada.
     """
     base = "https://api.open-meteo.com/v1/forecast"
     params = {
@@ -34,179 +77,156 @@ def obtener_nubosidad_horaria(lat, lon, timezone_str, fecha):
     r = requests.get(base, params=params, timeout=10)
     r.raise_for_status()
     data = r.json()
-    tiempos = [datetime.datetime.fromisoformat(t) for t in data["hourly"]["time"]]
+    times = [datetime.datetime.fromisoformat(t) for t in data["hourly"]["time"]]
     covers = data["hourly"]["cloudcover"]
     precps = data["hourly"]["precipitation_probability"]
-    return list(zip(tiempos, covers, precps))
+    return list(zip(times, covers, precps))
 
 def hora_hhmm_a_dt(hhmm, fecha):
-    """Convierte 'HH:MM' a datetime (naive) en la fecha dada (misma tz local que Open-Meteo)."""
+    """Convierte 'HH:MM' a datetime naive en la fecha dada."""
     h, m = map(int, hhmm.split(":"))
     return datetime.datetime(fecha.year, fecha.month, fecha.day, h, m)
 
 def resumen_nubes(nubosidad_horaria, inicio_dt, fin_dt):
     """
-    Calcula nubosidad media (%) y precip prob máx. (%) entre inicio_dt y fin_dt.
+    Media de nubosidad y precip máx en [inicio_dt, fin_dt].
     Devuelve (etiqueta, media_nubes, max_precip) o None si no hay datos.
     """
     trozos = [(c, p) for (t, c, p) in nubosidad_horaria if inicio_dt <= t <= fin_dt]
     if not trozos:
         return None
-    medias = sum(c for c, _ in trozos) / len(trozos)
+    media = sum(c for c, _ in trozos) / len(trozos)
     pmax = max(p for _, p in trozos)
-    if medias <= 30:
+    if media <= 30:
         estado = "☀️ despejado"
-    elif medias <= 70:
+    elif media <= 70:
         estado = "⛅ variable"
     else:
         estado = "☁️ nuboso"
-    return estado, round(medias), pmax
+    return estado, round(media), pmax
 
+# ─────────────────────────────────────────────
+# 3) Consejos nutricionales por estación
+# ─────────────────────────────────────────────
+consejos_estacionales = {
+    "invierno": "🌰 Consejo nutricional: Incluye pescados grasos (sardinas, caballa) y lácteos/enriquecidos.",
+    "primavera": "🥚 Consejo nutricional: Huevos, setas expuestas al sol y alimentos fortificados.",
+    "verano": "🐟 Consejo nutricional: Atún, yema de huevo; si no hay sol, valora alimentos enriquecidos.",
+    "otoño": "🧀 Consejo nutricional: Quesos curados, hígado de bacalao; consulta suplementos si procede."
+}
 
-# ➕ Función para detectar ubicación con fallback a Málaga
-def obtener_ubicacion():
-    try:
-        ip = requests.get("https://api.ipify.org").text
-        response = requests.get(f"https://ipapi.co/{ip}/json/")
-        data = response.json()
+def estacion_del_anio(fecha):
+    mes = fecha.month
+    if mes in [12, 1, 2]:
+        return "invierno"
+    if mes in [3, 4, 5]:
+        return "primavera"
+    if mes in [6, 7, 8]:
+        return "verano"
+    return "otoño"
 
-        ciudad = data.get("city")
-        lat = data.get("latitude")
-        lon = data.get("longitude")
-
-        if ciudad.lower() != "málaga":
-            raise ValueError("Ubicación distinta de Málaga")
-
-        print(f"✅ Ubicación detectada por IP: {ciudad} ({lat}, {lon})")
-
-    except:
-        print("⚠️ Error o ubicación no deseada (Ubicación distinta de Málaga). Usando fallback a Málaga.")
-        ciudad = "Málaga"
-        geolocator = Nominatim(user_agent="bot_inmune_diario")
-        location = geolocator.geocode(ciudad)
-        lat = location.latitude
-        lon = location.longitude
-
-    try:
-        tf = TimezoneFinder()
-        zona_horaria = tf.timezone_at(lat=lat, lng=lon)
-    except:
-        zona_horaria = "Europe/Madrid"
-
-    print(f"✅ Ubicación final: {ciudad} ({lat:.4f}, {lon:.4f}) - Zona horaria: {zona_horaria}")
-
-    return {
-        "latitud": lat,
-        "longitud": lon,
-        "ciudad": ciudad,
-        "timezone": zona_horaria
-    }
-
-# Obtener ubicación
+# ─────────────────────────────────────────────
+# 4) Flujo principal
+# ─────────────────────────────────────────────
 ubicacion = obtener_ubicacion()
 if not ubicacion:
-    print("Error: No se pudo obtener la ubicación correctamente.")
-    exit()
+    print("❌ Sin ubicación. Abortando.")
+    raise SystemExit(1)
 
 lat = ubicacion["latitud"]
 lon = ubicacion["longitud"]
-timezone_str = ubicacion["timezone"]
+tz = ubicacion["timezone"]
+ciudad = ubicacion["ciudad"]
 
-# Día de la semana actual
-dia_semana = datetime.datetime.now().weekday()
+hoy = datetime.datetime.now()
+dia_semana = hoy.weekday()  # 0=lun ... 6=dom
 
-# Elegir consejo aleatorio (con texto + referencia)
-consejo_dia = random.sample(consejos[dia_semana], 2)
-texto_consejo = next(x for x in consejo_dia if not x.startswith("📚"))
-referencia = next(x for x in consejo_dia if x.startswith("📚"))
+# Elegir pareja (consejo + referencia) de forma robusta
+pares = [consejos[dia_semana][i:i+2] for i in range(0, len(consejos[dia_semana]), 2)]
+par = random.choice(pares)
+# Identificar cuál es consejo y cuál referencia
+texto_consejo = next(x for x in par if not x.startswith("📚"))
+referencia = next(x for x in par if x.startswith("📚"))
 
-# Calcular intervalos solares seguros
-intervalos = calcular_intervalos_optimos(lat, lon, datetime.datetime.now(), timezone_str)
-antes, despues = intervalos
+# Intervalos solares (listas de 'HH:MM')
+antes, despues = calcular_intervalos_optimos(lat, lon, hoy, tz)
 
-# Construir mensaje
-# Obtener nubosidad horaria para hoy
-nubosidad_hoy = obtener_nubosidad_horaria(lat, lon, timezone_str, hoy.date())
+# Meteo para hoy
+try:
+    nubosidad_hoy = obtener_nubosidad_horaria(lat, lon, tz, hoy.date())
+except Exception as e:
+    print(f"⚠️ No se pudo obtener meteo: {e}")
+    nubosidad_hoy = []
 
-# Construcción del mensaje
-# Determinar estación (usaremos el consejo si no hay tramos o si hay nubosidad muy alta)
-mes = hoy.month
-if mes in [12, 1, 2]:
-    estacion = "invierno"
-elif mes in [3, 4, 5]:
-    estacion = "primavera"
-elif mes in [6, 7, 8]:
-    estacion = "verano"
-else:
-    estacion = "otoño"
-
+# Estación y consejo estacional
+estacion = estacion_del_anio(hoy)
 consejo_estacion = consejos_estacionales[estacion]
 
-
+# Construir mensaje
 mensaje = f"{texto_consejo}\n\n{referencia}\n\n"
-mensaje += f"🌞 Intervalos solares seguros para producir vit. D hoy ({ubicacion['ciudad']}):\n"
+mensaje += f"🌞 Intervalos solares seguros para producir vit. D hoy ({ciudad}):\n"
+
+aviso_nubes_alta = False
 
 # Mañana
 if antes:
     ini_m = hora_hhmm_a_dt(antes[0], hoy.date())
     fin_m = hora_hhmm_a_dt(antes[-1], hoy.date())
-    nubes_m = resumen_nubes(nubosidad_horaria=nubosidad_hoy, inicio_dt=ini_m, fin_dt=fin_m)
-
-    if nubes_m:
-        estado_m, media_m, pmax_m = nubes_m
-        mensaje += f"🌅 Mañana: {antes[0]} – {antes[-1]} ({estado_m}, nubes {media_m}%, lluvia {pmax_m}%)\n"
+    tag = f"🌅 Mañana: {antes[0]} – {antes[-1]}"
+    if nubosidad_hoy:
+        n_m = resumen_nubes(nubosidad_horaria=nubosidad_hoy, inicio_dt=ini_m, fin_dt=fin_m)
+        if n_m:
+            estado_m, media_m, pmax_m = n_m
+            mensaje += f"{tag} ({estado_m}, nubes {media_m}%, lluvia {pmax_m}%)\n"
+            if media_m >= 90:
+                aviso_nubes_alta = True
+        else:
+            mensaje += f"{tag}\n"
     else:
-        mensaje += f"🌅 Mañana: {antes[0]} – {antes[-1]}\n"
+        mensaje += f"{tag}\n"
 
 # Tarde
 if despues:
     ini_t = hora_hhmm_a_dt(despues[0], hoy.date())
     fin_t = hora_hhmm_a_dt(despues[-1], hoy.date())
-    nubes_t = resumen_nubes(nubosidad_horaria=nubosidad_hoy, inicio_dt=ini_t, fin_dt=fin_t)
-
-    if nubes_t:
-        estado_t, media_t, pmax_t = nubes_t
-        mensaje += f"🌇 Tarde: {despues[0]} – {despues[-1]} ({estado_t}, nubes {media_t}%, lluvia {pmax_t}%)\n"
+    tag = f"🌇 Tarde: {despues[0]} – {despues[-1]}"
+    if nubosidad_hoy:
+        n_t = resumen_nubes(nubosidad_horaria=nubosidad_hoy, inicio_dt=ini_t, fin_dt=fin_t)
+        if n_t:
+            estado_t, media_t, pmax_t = n_t
+            mensaje += f"{tag} ({estado_t}, nubes {media_t}%, lluvia {pmax_t}%)\n"
+            if media_t >= 90:
+                aviso_nubes_alta = True
+        else:
+            mensaje += f"{tag}\n"
     else:
-        mensaje += f"🌇 Tarde: {despues[0]} – {despues[-1]}\n"
+        mensaje += f"{tag}\n"
 
-if not antes and not despues:
-    mensaje += "Hoy el Sol no alcanza 30° de elevación. Aprovecha para descansar, hidratarte y cuidar tu alimentación ☕🍊.\n"
+# Sin tramos o nubosidad muy alta
+if (not antes and not despues) or aviso_nubes_alta:
+    if not antes and not despues:
+        mensaje += "⚠️ Hoy el Sol no alcanza 30° de elevación.\n"
+    else:
+        mensaje += "⚠️ Nubosidad muy alta: la síntesis cutánea de vit. D puede ser baja.\n"
+    mensaje += f"{consejo_estacion}\n"
 
-# Aviso adicional si hay nubosidad muy alta (>= 90%) en algún tramo válido
-nubes_m_alta = False
-nubes_t_alta = False
-if antes:
-    nubes_m = resumen_nubes(nubosidad_horaria=nubosidad_hoy,
-                             inicio_dt=hora_hhmm_a_dt(antes[0], hoy.date()),
-                             fin_dt=hora_hhmm_a_dt(antes[-1], hoy.date()))
-    nubes_m_alta = bool(nubes_m and nubes_m[1] >= 90)  # nubes_m[1] = media_nubes %
+# ─────────────────────────────────────────────
+# 5) Envío por Telegram (python-telegram-bot v20+)
+# ─────────────────────────────────────────────
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
-if despues:
-    nubes_t = resumen_nubes(nubosidad_horaria=nubosidad_hoy,
-                             inicio_dt=hora_hhmm_a_dt(despues[0], hoy.date()),
-                             fin_dt=hora_hhmm_a_dt(despues[-1], hoy.date()))
-    nubes_t_alta = bool(nubes_t and nubes_t[1] >= 90)
-
-if (antes and nubes_m_alta) or (despues and nubes_t_alta):
-    mensaje += f"⚠️ Nubosidad muy alta en el/los tramo(s). La síntesis cutánea de vit. D puede ser baja.\n{consejo_estacion}\n"
-
-
-
-# ✉️ Enviar por Telegram
 async def enviar_mensaje_telegram(texto):
-    bot_token = os.getenv("BOT_TOKEN")
-    chat_id = os.getenv("CHAT_ID")
-    if not bot_token or not chat_id:
-        print("Faltan BOT_TOKEN o CHAT_ID")
+    if not BOT_TOKEN or not CHAT_ID:
+        print("❌ Faltan BOT_TOKEN o CHAT_ID")
         return
     try:
-        bot = Bot(token=bot_token)
-        await bot.send_message(chat_id=chat_id, text=texto)
-        print("✅ Mensaje enviado por Telegram correctamente.")
+        bot = Bot(token=BOT_TOKEN)
+        await bot.send_message(chat_id=CHAT_ID, text=texto)
+        print("✅ Mensaje enviado por Telegram.")
     except Exception as e:
         print(f"❌ Error al enviar mensaje: {e}")
 
-# Ejecutar
+# Ejecutar envío
 asyncio.run(enviar_mensaje_telegram(mensaje))
 
