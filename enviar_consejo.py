@@ -9,6 +9,55 @@ from telegram import Bot
 import asyncio
 import os
 
+import datetime
+import requests
+
+def obtener_nubosidad_horaria(lat, lon, timezone_str, fecha):
+    """
+    Devuelve lista de tuplas (hora: datetime, cloudcover: int, precip_prob: int)
+    para el día 'fecha' en la zona horaria 'timezone_str'. Usa Open-Meteo (sin API key).
+    """
+    base = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "cloudcover,precipitation_probability",
+        "start_date": fecha.strftime("%Y-%m-%d"),
+        "end_date": fecha.strftime("%Y-%m-%d"),
+        "timezone": timezone_str,
+    }
+    r = requests.get(base, params=params, timeout=10)
+    r.raise_for_status()
+    data = r.json()
+    tiempos = [datetime.datetime.fromisoformat(t) for t in data["hourly"]["time"]]
+    covers = data["hourly"]["cloudcover"]
+    precps = data["hourly"]["precipitation_probability"]
+    return list(zip(tiempos, covers, precps))
+
+def hora_hhmm_a_dt(hhmm, fecha):
+    """Convierte 'HH:MM' a datetime (naive) en la fecha dada (misma tz local que Open-Meteo)."""
+    h, m = map(int, hhmm.split(":"))
+    return datetime.datetime(fecha.year, fecha.month, fecha.day, h, m)
+
+def resumen_nubes(nubosidad_horaria, inicio_dt, fin_dt):
+    """
+    Calcula nubosidad media (%) y precip prob máx. (%) entre inicio_dt y fin_dt.
+    Devuelve (etiqueta, media_nubes, max_precip) o None si no hay datos.
+    """
+    trozos = [(c, p) for (t, c, p) in nubosidad_horaria if inicio_dt <= t <= fin_dt]
+    if not trozos:
+        return None
+    medias = sum(c for c, _ in trozos) / len(trozos)
+    pmax = max(p for _, p in trozos)
+    if medias <= 30:
+        estado = "☀️ despejado"
+    elif medias <= 70:
+        estado = "⛅ variable"
+    else:
+        estado = "☁️ nuboso"
+    return estado, round(medias), pmax
+
+
 # ➕ Función para detectar ubicación con fallback a Málaga
 def obtener_ubicacion():
     try:
