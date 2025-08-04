@@ -9,9 +9,6 @@ from telegram import Bot
 import asyncio
 import os
 
-import datetime
-import requests
-
 def obtener_nubosidad_horaria(lat, lon, timezone_str, fecha):
     """
     Devuelve lista de tuplas (hora: datetime, cloudcover: int, precip_prob: int)
