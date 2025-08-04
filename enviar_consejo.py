@@ -120,14 +120,40 @@ intervalos = calcular_intervalos_optimos(lat, lon, datetime.datetime.now(), time
 antes, despues = intervalos
 
 # Construir mensaje
-mensaje = f"{texto_consejo}\n\n{referencia}\n\n🌞 Intervalos solares seguros para producir vit. D hoy ({ubicacion['ciudad']}):\n"
+# Obtener nubosidad horaria para hoy
+nubosidad_hoy = obtener_nubosidad_horaria(lat, lon, timezone_str, hoy.date())
 
+# Construcción del mensaje
+mensaje = f"{texto_consejo}\n\n{referencia}\n\n"
+mensaje += f"🌞 Intervalos solares seguros para producir vit. D hoy ({ubicacion['ciudad']}):\n"
+
+# Mañana
 if antes:
-    mensaje += f"🌅 Mañana: {antes[0]} - {antes[-1]}\n"
+    ini_m = hora_hhmm_a_dt(antes[0], hoy.date())
+    fin_m = hora_hhmm_a_dt(antes[-1], hoy.date())
+    nubes_m = resumen_nubes(nubosidad_horaria=nubosidad_hoy, inicio_dt=ini_m, fin_dt=fin_m)
+
+    if nubes_m:
+        estado_m, media_m, pmax_m = nubes_m
+        mensaje += f"🌅 Mañana: {antes[0]} – {antes[-1]} ({estado_m}, nubes {media_m}%, lluvia {pmax_m}%)\n"
+    else:
+        mensaje += f"🌅 Mañana: {antes[0]} – {antes[-1]}\n"
+
+# Tarde
 if despues:
-    mensaje += f"🌇 Tarde: {despues[0]} - {despues[-1]}"
+    ini_t = hora_hhmm_a_dt(despues[0], hoy.date())
+    fin_t = hora_hhmm_a_dt(despues[-1], hoy.date())
+    nubes_t = resumen_nubes(nubosidad_horaria=nubosidad_hoy, inicio_dt=ini_t, fin_dt=fin_t)
+
+    if nubes_t:
+        estado_t, media_t, pmax_t = nubes_t
+        mensaje += f"🌇 Tarde: {despues[0]} – {despues[-1]} ({estado_t}, nubes {media_t}%, lluvia {pmax_t}%)\n"
+    else:
+        mensaje += f"🌇 Tarde: {despues[0]} – {despues[-1]}\n"
+
 if not antes and not despues:
-    mensaje += "Hoy no hay intervalos seguros con el Sol entre 30° y 40° de elevación."
+    mensaje += "Hoy el Sol no alcanza 30° de elevación. Aprovecha para descansar, hidratarte y cuidar tu alimentación ☕🍊.\n"
+
 
 # ✉️ Enviar por Telegram
 async def enviar_mensaje_telegram(texto):
