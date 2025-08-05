@@ -1,16 +1,17 @@
+
 # ubicacion_y_sol.py
 
 import requests
 from geopy.geocoders import Nominatim
 from timezonefinder import TimezoneFinder
 from astral import LocationInfo
-from astral.sun import elevation
 from astral.sun import sun
-from astral.location import Observer
+from astral import sun as astral_sun
 from datetime import datetime, timedelta
 import pytz
+import os
 
-
+# 1. Función para obtener ubicación por IP con fallback a Málaga
 def obtener_ubicacion():
     try:
         ip = requests.get("https://api.ipify.org").text
@@ -24,22 +25,23 @@ def obtener_ubicacion():
         if not ciudad or not lat or not lon:
             raise ValueError("Datos incompletos desde IP")
 
-        print(f"✅ Ubicación detectada por IP: {ciudad} ({lat}, {lon})")
-
+        print(f"✅ Ubicación detectada: {ciudad} ({lat}, {lon})")
     except Exception as e:
         print(f"⚠️ Error al obtener ubicación por IP: {e}")
+        print("🔁 Usando ubicación por defecto: Málaga")
         ciudad = "Málaga"
         geolocator = Nominatim(user_agent="bot_inmune_diario")
         location = geolocator.geocode(ciudad)
+        if not location:
+            print("❌ No se pudo geolocalizar Málaga.")
+            return None
         lat = location.latitude
         lon = location.longitude
-        print(f"🔁 Usando ubicación por defecto: Málaga ({lat}, {lon})")
 
     try:
         tf = TimezoneFinder()
         zona_horaria = tf.timezone_at(lat=lat, lng=lon)
-    except Exception as e:
-        print(f"❌ Error al obtener la zona horaria: {e}")
+    except:
         zona_horaria = "Europe/Madrid"
 
     return {
@@ -49,66 +51,94 @@ def obtener_ubicacion():
         "timezone": zona_horaria
     }
 
-
+# 2. Función para calcular intervalos solares óptimos (30°–40°)
 def calcular_intervalos_optimos(lat, lon, fecha, zona_horaria):
-    location = LocationInfo("Ubicación", "España", zona_horaria, lat, lon)
+    from astral import Observer
+    from astral.sun import elevation
+    import math
+
+    tz = pytz.timezone(zona_horaria)
     observer = Observer(latitude=lat, longitude=lon)
-    s = sun(observer, date=fecha, tzinfo=pytz.timezone(zona_horaria))
+    hora = datetime(fecha.year, fecha.month, fecha.day, 6, 0, tzinfo=tz)
+    fin = datetime(fecha.year, fecha.month, fecha.day, 21, 0, tzinfo=tz)
 
-    elevaciones_validas = []
-    hora_actual = s["sunrise"]
-    fin = s["sunset"]
+    intervalo_m = []
+    intervalo_t = []
 
-    while hora_actual <= fin:
-        ubicacion = Observer(latitude=lat, longitude=lon)
-        altitud = elevation(observer=ubicacion, dateandtime=hora_actual)
-        if 30 <= altitud <= 40:
-            elevaciones_validas.append(hora_actual)
-        hora_actual += timedelta(minutes=10)
+    while hora <= fin:
+        elev = elevation(observer, hora)
+        if 30 <= elev <= 40:
+            if hora < datetime(fecha.year, fecha.month, fecha.day, 12, 0, tzinfo=tz):
+                intervalo_m.append(hora)
+            else:
+                intervalo_t.append(hora)
+        hora += timedelta(minutes=10)
 
-    # Dividir entre mañana y tarde según mediodía solar
-    mediodia = s["noon"]
-    antes = [h for h in elevaciones_validas if h < mediodia]
-    despues = [h for h in elevaciones_validas if h > mediodia]
-
-    # Compactar los intervalos en bloques
-    def agrupar_intervalos(lista):
-        if not lista:
+    def agrupar_intervalos(intervalos):
+        if not intervalos:
             return []
+        bloques = []
+        inicio = intervalos[0]
+        for i in range(1, len(intervalos)):
+            if (intervalos[i] - intervalos[i - 1]) > timedelta(minutes=20):
+                fin = intervalos[i - 1]
+                bloques.append((inicio, fin))
+                inicio = intervalos[i]
+        bloques.append((inicio, intervalos[-1]))
+        return bloques
 
-        grupos = []
-        inicio = lista[0]
-        anterior = lista[0]
+    return agrupar_intervalos(intervalo_m), agrupar_intervalos(intervalo_t)
 
-        for actual in lista[1:]:
-            if (actual - anterior) > timedelta(minutes=10):
-                grupos.append((inicio, anterior))
-                inicio = actual
-            anterior = actual
-
-        grupos.append((inicio, anterior))
-        return grupos
-
-    return agrupar_intervalos(antes), agrupar_intervalos(despues)
-
+# 3. Función para obtener pronóstico del tiempo
 def obtener_pronostico_meteorologico(fecha, lat, lon):
-    ...
-    return pronostico_formateado
+    clave = os.getenv("OPENWEATHER_API_KEY")
+    if not clave:
+        return {}
 
-def describir_intervalos(intervalos, ciudad):
-    if not intervalos[0] and not intervalos[1]:
-        return f"⚠️ Hoy no se puede producir vitamina D en {ciudad} (el Sol no supera los 30° de elevación)."
+    url = f"https://api.openweathermap.org/data/2.5/forecast?lat={lat}&lon={lon}&appid={clave}&units=metric&lang=es"
+    try:
+        respuesta = requests.get(url)
+        datos = respuesta.json()
+    except:
+        return {}
 
-    mensaje = f"☀️ Intervalos solares seguros para producir vit. D hoy en {ciudad}:\n"
+    pronostico = {}
+    for entrada in datos["list"]:
+        hora_texto = entrada["dt_txt"]
+        hora_dt = datetime.strptime(hora_texto, "%Y-%m-%d %H:%M:%S")
+        if hora_dt.date() == fecha:
+            descripcion = entrada["weather"][0]["description"]
+            nubes = entrada["clouds"]["all"]
+            pronostico[hora_dt.replace(tzinfo=pytz.utc)] = {
+                "descripcion": descripcion,
+                "nubes": nubes
+            }
+    return pronostico
 
-    if intervalos[0]:
-        mensaje += "🌅 Mañana:\n"
-        for inicio, fin in intervalos[0]:
-            mensaje += f"🕒 {inicio.strftime('%H:%M')} - {fin.strftime('%H:%M')}\n"
+# 4. Función para describir los intervalos en texto
+def describir_intervalos(intervalos, ciudad, pronostico=None):
+    antes, despues = intervalos
+    texto = f"☀️ Intervalos solares seguros para producir vit. D hoy en {ciudad}:\n"
+    
+    def formatear_intervalo(inicio, fin, label):
+        texto = f"🕒 {inicio.strftime('%H:%M')} - {fin.strftime('%H:%M')}"
+        if pronostico:
+            hora_clave = inicio.replace(minute=0, second=0, microsecond=0)
+            datos = pronostico.get(hora_clave.astimezone(pytz.utc))
+            if datos:
+                if datos["nubes"] > 75:
+                    texto += f" (☁️ {datos['descripcion']})"
+                else:
+                    texto += f" (🌤️ {datos['descripcion']})"
+        return f"{label}\n{texto}\n"
 
-    if intervalos[1]:
-        mensaje += "🌇 Tarde:\n"
-        for inicio, fin in intervalos[1]:
-            mensaje += f"🕒 {inicio.strftime('%H:%M')} - {fin.strftime('%H:%M')}\n"
+    if antes:
+        for inicio, fin in antes:
+            texto += formatear_intervalo(inicio, fin, "🌅 Mañana:")
+    if despues:
+        for inicio, fin in despues:
+            texto += formatear_intervalo(inicio, fin, "🌇 Tarde:")
+    if not antes and not despues:
+        texto += "⚠️ Hoy no hay intervalos solares seguros (30°–40° de elevación)."
 
-    return mensaje
+    return texto.strip()
