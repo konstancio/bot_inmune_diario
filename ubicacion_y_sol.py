@@ -91,6 +91,9 @@ def calcular_intervalos_optimos(lat, lon, fecha, zona_horaria):
 
     return agrupar_intervalos(antes), agrupar_intervalos(despues)
 
+def obtener_pronostico_meteorologico(fecha, lat, lon):
+    ...
+    return pronostico_formateado
 
 def describir_intervalos(intervalos, ciudad):
     if not intervalos[0] and not intervalos[1]:
