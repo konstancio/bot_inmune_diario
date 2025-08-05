@@ -5,6 +5,7 @@ from geopy.geocoders import Nominatim
 from timezonefinder import TimezoneFinder
 from astral import LocationInfo
 from astral.sun import elevation
+from astral.sun import sun
 from astral.location import Observer
 from datetime import datetime, timedelta
 import pytz
