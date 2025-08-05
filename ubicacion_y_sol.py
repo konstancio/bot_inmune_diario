@@ -4,7 +4,7 @@ import requests
 from geopy.geocoders import Nominatim
 from timezonefinder import TimezoneFinder
 from astral import LocationInfo
-from astral.sun import sun
+from astral.sun import elevation
 from astral.location import Observer
 from datetime import datetime, timedelta
 import pytz
@@ -59,7 +59,8 @@ def calcular_intervalos_optimos(lat, lon, fecha, zona_horaria):
     fin = s["sunset"]
 
     while hora_actual <= fin:
-        altitud = location.solar_elevation(hora_actual)
+        ubicacion = Observer(latitude=lat, longitude=lon)
+        altitud = elevation(observer=ubicacion, dateandtime=hora_actual)
         if 30 <= altitud <= 40:
             elevaciones_validas.append(hora_actual)
         hora_actual += timedelta(minutes=10)
