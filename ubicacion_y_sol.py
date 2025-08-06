@@ -141,4 +141,78 @@ def describir_intervalos(intervalos, ciudad, pronostico=None):
     if not antes and not despues:
         texto += "⚠️ Hoy no hay intervalos solares seguros (30°–40° de elevación)."
 
+    # 5. Función para calcular grados solares cada día del año.
+import math
+import datetime
+import pytz
+
+def calcular_intervalos_30_40(fecha, latitud=36.7213, longitud=-4.4214, zona_horaria="Europe/Madrid"):
+    # Declinación solar aproximada
+    def declinacion(dia_del_ano):
+        return 23.44 * math.sin(math.radians((360 / 365) * (dia_del_ano - 81)))
+
+    # Elevación solar
+    def elevacion_solar(hora_decimal, declinacion, lat):
+        h = (hora_decimal - 12) * 15  # ángulo horario
+        return math.degrees(math.asin(
+            math.sin(math.radians(lat)) * math.sin(math.radians(declinacion)) +
+            math.cos(math.radians(lat)) * math.cos(math.radians(declinacion)) * math.cos(math.radians(h))
+        ))
+
+    # Obtener zona horaria
+    tz = pytz.timezone(zona_horaria)
+    hoy = datetime.datetime.combine(fecha, datetime.time(0, 0)).astimezone(tz)
+    dia_del_ano = fecha.timetuple().tm_yday
+    decl = declinacion(dia_del_ano)
+
+    paso_min = 5
+    elevaciones = []
+    for minuto in range(0, 24 * 60, paso_min):
+        hora = hoy + datetime.timedelta(minutes=minuto)
+        hora_local = hora.astimezone(tz)
+        hora_decimal = hora_local.hour + hora_local.minute / 60
+        elev = elevacion_solar(hora_decimal, decl, latitud)
+        elevaciones.append((hora_local, elev))
+
+    # Buscar tramos donde la elevación esté entre 30 y 40 grados
+    tramos = []
+    en_tramo = False
+    inicio = None
+
+    for i, (hora, elev) in enumerate(elevaciones):
+        if 30 <= elev <= 40:
+            if not en_tramo:
+                inicio = hora
+                en_tramo = True
+        else:
+            if en_tramo:
+                fin = elevaciones[i - 1][0]
+                tramos.append((inicio, fin))
+                en_tramo = False
+
+    if en_tramo:
+        tramos.append((inicio, elevaciones[-1][0]))
+
+    # Separar en dos tramos: uno antes del mediodía y otro después
+    mediodia = hoy.replace(hour=12, minute=0)
+    tramo_manana = next(((i, f) for i, f in tramos if f <= mediodia), None)
+    tramo_tarde = next(((i, f) for i, f in tramos if i > mediodia), None)
+
+    return tramo_manana, tramo_tarde
+
+def formatear_intervalos(tramo_manana, tramo_tarde, ciudad):
+    texto = f"\n☀️ Intervalos solares seguros para producir vit. D hoy en {ciudad}:"
+
+    if tramo_manana:
+        inicio_m, fin_m = tramo_manana
+        texto += f"\n🌅 Mañana:\n🕒 {inicio_m.strftime('%H:%M')} - {fin_m.strftime('%H:%M')}"
+    if tramo_tarde:
+        inicio_t, fin_t = tramo_tarde
+        texto += f"\n🌇 Tarde:\n🕒 {inicio_t.strftime('%H:%M')} - {fin_t.strftime('%H:%M')}"
+
+    if not tramo_manana and not tramo_tarde:
+        texto += "\n(No hay elevación solar suficiente hoy para producir vitamina D)"
+
+    return texto
+
     return texto.strip()
