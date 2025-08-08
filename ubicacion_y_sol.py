@@ -146,73 +146,106 @@ import math
 import datetime
 import pytz
 
-def calcular_intervalos_30_40(fecha, latitud=36.7213, longitud=-4.4214, zona_horaria="Europe/Madrid"):
-    # Declinación solar aproximada
-    def declinacion(dia_del_ano):
-        return 23.44 * math.sin(math.radians((360 / 365) * (dia_del_ano - 81)))
+def _declinacion_solar(n):
+    # Cooper: δ ≈ 23.44° * sin(2π*(284+n)/365)
+    return 23.44 * math.sin(2*math.pi*(284 + n)/365.0)
 
-    # Elevación solar
-    def elevacion_solar(hora_decimal, declinacion, lat):
-        h = (hora_decimal - 12) * 15  # ángulo horario
-        return math.degrees(math.asin(
-            math.sin(math.radians(lat)) * math.sin(math.radians(declinacion)) +
-            math.cos(math.radians(lat)) * math.cos(math.radians(declinacion)) * math.cos(math.radians(h))
-        ))
+def _ecuacion_del_tiempo_min(n):
+    # Spencer: B = 2π(n-81)/364 ; EoT (min) = 9.87 sin(2B) - 7.53 cos B - 1.5 sin B
+    B = 2*math.pi*(n - 81)/364.0
+    return 9.87*math.sin(2*B) - 7.53*math.cos(B) - 1.5*math.sin(B)
 
-    # Obtener zona horaria
+def _elevacion_solar(phi_deg, delta_deg, hora_solar_decimal):
+    # sin(h) = sinφ sinδ + cosφ cosδ cosH , H = 15°*(LST-12)
+    H = math.radians(15.0*(hora_solar_decimal - 12.0))
+    phi = math.radians(phi_deg)
+    delta = math.radians(delta_deg)
+    sin_h = math.sin(phi)*math.sin(delta) + math.cos(phi)*math.cos(delta)*math.cos(H)
+    # Evitar errores numéricos
+    sin_h = max(-1.0, min(1.0, sin_h))
+    return math.degrees(math.asin(sin_h))
+
+def calcular_intervalos_30_40(fecha, latitud=36.7213, longitud=-4.4216, zona_horaria="Europe/Madrid"):
+    """
+    Devuelve (tramo_mañana, tramo_tarde) como pares (inicio_dt, fin_dt) tz-aware en la zona dada,
+    para los periodos donde 30° ≤ elevación ≤ 40°.
+    """
     tz = pytz.timezone(zona_horaria)
-    hoy = datetime.datetime.combine(fecha, datetime.time(0, 0)).astimezone(tz)
-    dia_del_ano = fecha.timetuple().tm_yday
-    decl = declinacion(dia_del_ano)
+    n = fecha.timetuple().tm_yday
+    delta = _declinacion_solar(n)                   # declinación en grados
+    eot_min = _ecuacion_del_tiempo_min(n)           # Ecuación del tiempo en minutos
 
+    # Offset del huso en horas (incluye DST si aplica ese día)
+    # Usamos mediodía local para coger el offset del día
+    noon_local = tz.localize(datetime.datetime(fecha.year, fecha.month, fecha.day, 12, 0))
+    offset_horas = noon_local.utcoffset().total_seconds() / 3600.0
+    # Meridiano estándar del huso
+    L_st = 15.0 * offset_horas  # grados
+
+    # Corrección total en minutos para pasar de hora local a hora solar
+    # TC = 4*(longitud - L_st) + EoT   (min)
+    TC_min = 4.0 * (longitud - L_st) + eot_min
+
+    # Hora local del mediodía solar (LST=12 ⇒ LT = 12 - TC/60)
+    mediodia_local_decimal = 12.0 - (TC_min / 60.0)
+    mediodia_local_dt = tz.localize(datetime.datetime(
+        fecha.year, fecha.month, fecha.day, int(mediodia_local_decimal),
+        int((mediodia_local_decimal % 1)*60)
+    ))
+
+    # Escaneamos el día con paso fino
     paso_min = 5
-    elevaciones = []
-    for minuto in range(0, 24 * 60, paso_min):
-        hora = hoy + datetime.timedelta(minutes=minuto)
-        hora_local = hora.astimezone(tz)
-        hora_decimal = hora_local.hour + hora_local.minute / 60
-        elev = elevacion_solar(hora_decimal, decl, latitud)
-        elevaciones.append((hora_local, elev))
+    inicio_busqueda = tz.localize(datetime.datetime(fecha.year, fecha.month, fecha.day, 6, 0))
+    fin_busqueda     = tz.localize(datetime.datetime(fecha.year, fecha.month, fecha.day, 21, 0))
 
-    # Buscar tramos donde la elevación esté entre 30 y 40 grados
+    puntos = []
+    t = inicio_busqueda
+    while t <= fin_busqueda:
+        # Hora local decimal
+        h_local = t.hour + t.minute/60.0
+        # Hora solar verdadera
+        h_solar = h_local + (TC_min / 60.0)
+        elev = _elevacion_solar(latitud, delta, h_solar)
+        puntos.append((t, elev))
+        t += datetime.timedelta(minutes=paso_min)
+
+    # Detectar tramos 30–40
     tramos = []
     en_tramo = False
-    inicio = None
-
-    for i, (hora, elev) in enumerate(elevaciones):
-        if 30 <= elev <= 40:
+    t_inicio = None
+    for i, (ti, elev) in enumerate(puntos):
+        if 30.0 <= elev <= 40.0:
             if not en_tramo:
-                inicio = hora
                 en_tramo = True
+                t_inicio = ti
         else:
             if en_tramo:
-                fin = elevaciones[i - 1][0]
-                tramos.append((inicio, fin))
+                tramos.append((t_inicio, puntos[i-1][0]))
                 en_tramo = False
-
     if en_tramo:
-        tramos.append((inicio, elevaciones[-1][0]))
+        tramos.append((t_inicio, puntos[-1][0]))
 
-    # Separar en dos tramos: uno antes del mediodía y otro después
-    mediodia = hoy.replace(hour=12, minute=0)
-    tramo_manana = next(((i, f) for i, f in tramos if f <= mediodia), None)
-    tramo_tarde = next(((i, f) for i, f in tramos if i > mediodia), None)
+    # Separar en mañana/tarde usando el mediodía solar calculado
+    tramo_manana = None
+    tramo_tarde  = None
+    for ini, fin in tramos:
+        if fin <= mediodia_local_dt and tramo_manana is None:
+            tramo_manana = (ini, fin)
+        elif ini >= mediodia_local_dt and tramo_tarde is None:
+            tramo_tarde = (ini, fin)
 
     return tramo_manana, tramo_tarde
 
 def formatear_intervalos(tramo_manana, tramo_tarde, ciudad):
     texto = f"\n☀️ Intervalos solares seguros para producir vit. D hoy en {ciudad}:"
-
     if tramo_manana:
-        inicio_m, fin_m = tramo_manana
-        texto += f"\n🌅 Mañana:\n🕒 {inicio_m.strftime('%H:%M')} - {fin_m.strftime('%H:%M')}"
+        a, b = tramo_manana
+        texto += f"\n🌅 Mañana:\n🕒 {a.strftime('%H:%M')} - {b.strftime('%H:%M')}"
     if tramo_tarde:
-        inicio_t, fin_t = tramo_tarde
-        texto += f"\n🌇 Tarde:\n🕒 {inicio_t.strftime('%H:%M')} - {fin_t.strftime('%H:%M')}"
-
+        a, b = tramo_tarde
+        texto += f"\n🌇 Tarde:\n🕒 {a.strftime('%H:%M')} - {b.strftime('%H:%M')}"
     if not tramo_manana and not tramo_tarde:
         texto += "\n(No hay elevación solar suficiente hoy para producir vitamina D)"
-
     return texto
 
     return texto.strip()
