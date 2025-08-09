@@ -5,11 +5,13 @@ import datetime
 import random
 import asyncio
 from telegram import Bot
+
 from consejos_diarios import consejos
 from ubicacion_y_sol import (
     obtener_ubicacion,
     calcular_intervalos_30_40,
-    formatear_intervalos,
+    obtener_pronostico_diario,
+    formatear_intervalos_meteo,
 )
 
 # 1) Ubicación y zona horaria
@@ -28,14 +30,17 @@ conj = consejos[dia_semana]
 pares = [conj[i:i+2] for i in range(0, len(conj), 2)]
 consejo, referencia = random.choice(pares)
 
-# 4) Intervalos solares precisos 30–40°
+# 4) Intervalos solares precisos 30–40° y pronóstico diario (una sola llamada)
 tramo_manana, tramo_tarde = calcular_intervalos_30_40(hoy, lat, lon, timezone_str)
-texto_intervalos = formatear_intervalos(tramo_manana, tramo_tarde, ciudad)
+pronostico = obtener_pronostico_diario(lat, lon, hoy, timezone_str)
 
-# 5) Mensaje final
+# 5) Texto final de intervalos con icono + estado + temperatura
+texto_intervalos = formatear_intervalos_meteo(tramo_manana, tramo_tarde, ciudad, pronostico)
+
+# 6) Mensaje final
 mensaje = f"{consejo}\n\n{referencia}\n\n{texto_intervalos}"
 
-# 6) Envío por Telegram
+# 7) Envío por Telegram
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
