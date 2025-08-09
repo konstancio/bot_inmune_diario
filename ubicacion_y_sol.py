@@ -249,3 +249,103 @@ def formatear_intervalos(tramo_manana, tramo_tarde, ciudad):
     return texto
 
     return texto.strip()
+
+# ====== PRONÓSTICO METEOROLÓGICO (Open-Meteo, sin API key) ======
+import requests
+from datetime import datetime, timedelta
+import math
+import pytz
+
+def _wm_code_to_icon_desc(code: int) -> tuple[str, str]:
+    # Mapeo básico Open-Meteo weathercode -> (emoji, desc)
+    # https://open-meteo.com/en/docs
+    grupos = {
+        (0,): ("☀️", "despejado"),
+        (1, 2): ("🌤️", "poco nuboso"),
+        (3,): ("☁️", "nuboso"),
+        (45, 48): ("🌫️", "niebla"),
+        (51, 53, 55, 61, 63, 65, 80, 81, 82): ("🌧️", "lluvia"),
+        (56, 57, 66, 67): ("🌧️", "llovizna"),
+        (71, 73, 75, 77, 85, 86): ("❄️", "nieve"),
+        (95, 96, 99): ("⛈️", "tormenta"),
+    }
+    for ks, v in grupos.items():
+        if code in ks: return v
+    return ("🌥️", "variable")
+
+def obtener_pronostico_diario(lat: float, lon: float, fecha, zona_horaria: str):
+    """
+    Devuelve un diccionario {datetime_local: {temp, nubes, code}} para la fecha dada.
+    """
+    url = (
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lat}&longitude={lon}"
+        "&hourly=temperature_2m,cloudcover,weathercode"
+        f"&timezone={zona_horaria}"
+        f"&start_date={fecha.isoformat()}&end_date={fecha.isoformat()}"
+    )
+    r = requests.get(url, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+
+    horas = data["hourly"]["time"]
+    temps = data["hourly"]["temperature_2m"]
+    nubes = data["hourly"]["cloudcover"]
+    codes = data["hourly"]["weathercode"]
+
+    tz = pytz.timezone(zona_horaria)
+    out = {}
+    for t_str, T, C, W in zip(horas, temps, nubes, codes):
+        # Open-Meteo ya devuelve con tz ajustada; parseamos a naive y ponemos tz explícita
+        dt_local = datetime.fromisoformat(t_str)  # ya local
+        if dt_local.tzinfo is None:
+            dt_local = tz.localize(dt_local)
+        out[dt_local] = {"temp": float(T), "nubes": int(C), "code": int(W)}
+    return out
+
+def _pronostico_mas_cercano(pronostico: dict, dt_obj):
+    """
+    Busca la entrada de pronóstico más cercana en el mismo día a la hora dt_obj (tz-aware).
+    """
+    if not pronostico:
+        return None
+    # redondeamos dt_obj a la hora más cercana
+    objetivo = dt_obj.replace(minute=0, second=0, microsecond=0)
+    # si está muy lejos de la hora exacta, ajusta a la hora siguiente/anterior según minutos
+    if dt_obj.minute >= 30:
+        objetivo = objetivo + timedelta(hours=1)
+
+    # si existe clave exacta
+    if objetivo in pronostico:
+        return pronostico[objetivo]
+
+    # si no existe exacta, busca la más cercana
+    closest_key = min(pronostico.keys(), key=lambda k: abs(k - objetivo))
+    return pronostico[closest_key]
+
+def formatear_intervalos_meteo(tramo_manana, tramo_tarde, ciudad: str, pronostico: dict):
+    """
+    Igual que formatear_intervalos, pero añade icono + estado + temp en el INICIO de cada tramo.
+    """
+    texto = f"\n☀️ Intervalos solares seguros para producir vit. D hoy en {ciudad}:"
+
+    if tramo_manana:
+        a, b = tramo_manana
+        info = _pronostico_mas_cercano(pronostico, a)
+        if info:
+            icon, desc = _wm_code_to_icon_desc(info["code"])
+            texto += f"\n🌅 Mañana:\n🕒 {a.strftime('%H:%M')} - {b.strftime('%H:%M')}  | {icon} {desc} ({round(info['temp'])}°C, nubes {info['nubes']}%)"
+        else:
+            texto += f"\n🌅 Mañana:\n🕒 {a.strftime('%H:%M')} - {b.strftime('%H:%M')}"
+    if tramo_tarde:
+        a, b = tramo_tarde
+        info = _pronostico_mas_cercano(pronostico, a)
+        if info:
+            icon, desc = _wm_code_to_icon_desc(info["code"])
+            texto += f"\n🌇 Tarde:\n🕒 {a.strftime('%H:%M')} - {b.strftime('%H:%M')}  | {icon} {desc} ({round(info['temp'])}°C, nubes {info['nubes']}%)"
+        else:
+            texto += f"\n🌇 Tarde:\n🕒 {a.strftime('%H:%M')} - {b.strftime('%H:%M')}"
+    if not tramo_manana and not tramo_tarde:
+        texto += "\n(No hay elevación solar suficiente hoy para producir vitamina D)"
+
+    return texto
