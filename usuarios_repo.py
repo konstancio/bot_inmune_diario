@@ -9,7 +9,7 @@ import re
 import pytz
 
 USUARIOS_FILE = Path("usuarios.json")
-VALID_LANG = {"es", "en", "fr", "it", "de", "pt", "nl"}
+VALID_LANG = {"es", "en", "fr", "it", "de", "pt", "nl", "ru", "sr", "hr", "bs", "sh"}
 
 # ----------------- Utilidades básicas de almacenamiento -----------------
 
