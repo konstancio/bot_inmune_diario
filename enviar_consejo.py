@@ -1,145 +1,155 @@
-# enviar_consejo.py
-# Multiusuario + 9:00 locales + no duplicados + traducción + meteo + intervalos 30–40°
+# enviar_consejo.py  — versión multiusuario con traducción de intervalos
 
 import os
 import asyncio
+import random
 import datetime
-from typing import Optional
 
 from telegram import Bot
-from deep_translator import LibreTranslator
 from geopy.geocoders import Nominatim
 from timezonefinder import TimezoneFinder
-import pytz
+from deep_translator import LibreTranslator
 
 from consejos_diarios import consejos
-from usuarios_repo import (
-    list_users, should_send_now, mark_sent_today, migrate_fill_defaults
-)
+from usuarios_repo import get_all_users   # Debe devolver lista de dicts: {"chat_id","lang","city"}
 from ubicacion_y_sol import (
-    obtener_ubicacion,              # fallback general
-    calcular_intervalos_30_40,      # fórmula precisa con EoT y longitud
-    obtener_pronostico_diario,      # Open-Meteo, sin API key
-    formatear_intervalos_meteo,     # añade icono + estado + temp
+    calcular_intervalos_optimos,   # si ya migraste a 30–40°, cambia por calcular_intervalos_30_40
+    describir_intervalos,          # genera texto (ES) para los tramos
 )
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Utilidades
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _normaliza_idioma(code: str) -> str:
+    """Normaliza códigos de idioma; mapea alias comunes a ISO-2."""
+    if not code:
+        return "es"
+    code = code.strip().lower()
+    alias = {
+        "sh": "sr",  # serbocroata → serbio (proxy)
+        "sc": "sr",
+        "srp": "sr",
+        "cro": "hr",
+        "ser": "sr",
+        "bos": "bs",
+        "pt-br": "pt",
+    }
+    return alias.get(code, code)
+
+def traducir(texto: str, lang_destino: str) -> str:
+    """Traduce desde ES a lang_destino. Si ya es 'es' o falla, devuelve original."""
+    dest = _normaliza_idioma(lang_destino)
+    if dest == "es":
+        return texto
+    try:
+        tr = LibreTranslator(source="es", target=dest)
+        return tr.translate(texto)
+    except Exception as e:
+        print(f"[WARN] Traducción fallida a '{dest}': {e}")
+        return texto
+
+def geolocalizar_ciudad(ciudad: str):
+    """
+    Devuelve (lat, lon, timezone_str, nombre_mostrable) para una ciudad.
+    Si falla, usa Málaga como reserva.
+    """
+    if not ciudad:
+        ciudad = "Málaga"
+
+    try:
+        geolocator = Nominatim(user_agent="bot_inmune_diario_multi")
+        loc = geolocator.geocode(ciudad)
+        if not loc:
+            raise ValueError("Ciudad no encontrada")
+
+        lat, lon = loc.latitude, loc.longitude
+        tf = TimezoneFinder()
+        tz = tf.timezone_at(lat=lat, lng=lon) or "Europe/Madrid"
+        nombre = loc.address.split(",")[0] if loc.address else ciudad
+        print(f"✅ Geolocalizada {ciudad} -> ({lat:.4f}, {lon:.4f}), tz={tz}")
+        return lat, lon, tz, nombre
+    except Exception as e:
+        print(f"⚠️ Geolocalización fallida para '{ciudad}': {e}. Usando Málaga por defecto.")
+        # Fallback Málaga
+        lat, lon = 36.7213028, -4.4216366
+        tz, nombre = "Europe/Madrid", "Málaga"
+        return lat, lon, tz, nombre
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Consejo base del día (ES)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def consejo_y_referencia_del_dia() -> tuple[str, str]:
+    """Selecciona aleatoriamente un bloque (consejo + ref) del día (ES)."""
+    idx_dia = datetime.datetime.now().weekday()  # 0=lun .. 6=dom
+    pares = consejos[idx_dia]
+    indices = list(range(0, len(pares), 2))
+    idx = random.choice(indices)
+    return pares[idx], pares[idx + 1]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Envío por Telegram a un usuario
+# ──────────────────────────────────────────────────────────────────────────────
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# ---------- Utilidades ----------
-
-def traducir(texto: str, lang: Optional[str]) -> str:
-    """Traduce usando LibreTranslator si lang != 'es'."""
-    if not lang or lang.lower() == "es":
-        return texto
-    try:
-        return LibreTranslator(source="auto", target=lang.lower()).translate(texto)
-    except Exception as e:
-        print(f"⚠️ Traducción fallida ({lang}): {e}")
-        return texto
-
-def geocodificar(ciudad: str):
-    """Devuelve dict con lat, lon, tz y nombre de ciudad. None si falla."""
-    try:
-        geolocator = Nominatim(user_agent="bot_inmune_diario")
-        loc = geolocator.geocode(ciudad)
-        if not loc:
-            return None
-        tf = TimezoneFinder()
-        tz = tf.timezone_at(lat=loc.latitude, lng=loc.longitude) or "Europe/Madrid"
-        return {
-            "lat": float(loc.latitude),
-            "lon": float(loc.longitude),
-            "tz": tz,
-            "ciudad": ciudad
-        }
-    except Exception as e:
-        print(f"⚠️ Geocodificación fallida ({ciudad}): {e}")
-        return None
-
-async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime):
+async def enviar_a_usuario(bot: Bot, user: dict, base_consejo: str, base_ref: str):
     """
-    Decide si debe enviar ahora (9:00 locales). Si sí, genera y envía el mensaje
-    (consejo + referencia + intervalos 30–40° + meteo) y marca como enviado hoy.
+    Envía el mensaje a un usuario:
+      user = {"chat_id": "...", "lang": "es|en|ru|sr|...", "city": "Málaga|Zagreb|..."}
     """
-    # ¿Toca enviar ahora?
-    if not should_send_now(prefs, now_utc=now_utc):
+    chat_id = str(user.get("chat_id", "")).strip()
+    if not chat_id:
+        print("⛔ Usuario sin chat_id. Saltando…")
         return
 
-    # ---- Determinar ubicación del usuario (prioridad: GPS > ciudad > fallback) ----
-    lat = prefs.get("lat")
-    lon = prefs.get("lon")
-    tzname = prefs.get("tz")
-    ciudad = prefs.get("city")
+    lang = _normaliza_idioma(user.get("lang", "es"))
+    ciudad_pedida = user.get("city", "Málaga")
 
-    if lat is None or lon is None or not tzname:
-        if ciudad:
-            g = geocodificar(ciudad)
-            if g:
-                lat, lon, tzname, ciudad = g["lat"], g["lon"], g["tz"], g["ciudad"]
-            else:
-                ub = obtener_ubicacion()
-                lat = float(ub["latitud"]); lon = float(ub["longitud"])
-                tzname = ub["timezone"]; ciudad = ub["ciudad"]
-        else:
-            ub = obtener_ubicacion()
-            lat = float(ub["latitud"]); lon = float(ub["longitud"])
-            tzname = ub["timezone"]; ciudad = ub["ciudad"]
+    # Ubicación por ciudad del usuario
+    lat, lon, tz, ciudad_mostrar = geolocalizar_ciudad(ciudad_pedida)
 
-    # ---- Fecha y hora local para este usuario ----
+    # Intervalos solares (si ya tienes la versión 30–40°, usa esa función en su lugar)
+    fecha = datetime.date.today()
+    tramos = calcular_intervalos_optimos(lat, lon, fecha, tz)  # <- sustituye por calcular_intervalos_30_40 si toca
+    texto_intervalos_es = describir_intervalos(tramos, ciudad_mostrar)  # texto en español
+    texto_intervalos_tr = traducir(texto_intervalos_es, lang)           # traducimos también los intervalos
+
+    # Traducción consejo + referencia al idioma del usuario
+    consejo_t = traducir(base_consejo, lang)
+    ref_t     = traducir(base_ref, lang)
+
+    # Mensaje final
+    mensaje = f"{consejo_t}\n\n{ref_t}\n\n{texto_intervalos_tr}"
+
     try:
-        tz = pytz.timezone(tzname)
-    except Exception:
-        tz = pytz.timezone("Europe/Madrid")
-        tzname = "Europe/Madrid"
+        await bot.send_message(chat_id=chat_id, text=mensaje)
+        print(f"📤 Enviado a {chat_id} ({ciudad_mostrar}, {lang})")
+    except Exception as e:
+        print(f"❌ Error enviando a {chat_id}: {e}")
 
-    now_local = now_utc.astimezone(tz)
-    hoy_local = now_local.date()
-
-    # ---- Consejo y referencia del día (pares) ----
-    dia_semana = now_local.weekday()  # lunes=0
-    conj = consejos[dia_semana]
-    pares = [conj[i:i+2] for i in range(0, len(conj), 2)]
-    consejo, referencia = pares[now_local.toordinal() % len(pares)]  # rotación estable por fecha local
-
-    # ---- Intervalos 30–40° y pronóstico ----
-    tramo_m, tramo_t = calcular_intervalos_30_40(hoy_local, lat, lon, tzname)
-    pron = obtener_pronostico_diario(lat, lon, hoy_local, tzname)
-    texto_intervalos = formatear_intervalos_meteo(tramo_m, tramo_t, ciudad, pron)
-
-    mensaje = f"{consejo}\n\n{referencia}\n\n{texto_intervalos}"
-    mensaje = traducir(mensaje, prefs.get("lang", "es"))
-
-    # ---- Enviar ----
-    await bot.send_message(chat_id=chat_id, text=mensaje)
-
-    # ---- Marcar como enviado hoy (por fecha local) ----
-    mark_sent_today(chat_id, hoy_local)
-
-# ---------- Main ----------
+# ──────────────────────────────────────────────────────────────────────────────
+# Main
+# ──────────────────────────────────────────────────────────────────────────────
 
 async def main():
     if not BOT_TOKEN:
-        raise RuntimeError("❌ Faltan variables de entorno: BOT_TOKEN")
-    bot = Bot(token=BOT_TOKEN)
-
-    # Asegurar que usuarios.json tiene todos los campos nuevos
-    migrate_fill_defaults()
-
-    users = list_users()
-    if not users:
-        print("ℹ️ No hay suscriptores aún.")
+        print("❌ FALTA BOT_TOKEN en variables de entorno.")
         return
 
-    now_utc = datetime.datetime.now(datetime.timezone.utc)
-    enviados = 0
-    for uid, prefs in users.items():
-        try:
-            await enviar_a_usuario(bot, uid, prefs, now_utc)
-            enviados += 1
-        except Exception as e:
-            print(f"❌ Error enviando a {uid}: {e}")
+    usuarios = get_all_users()
+    if not usuarios:
+        print("⚠️ No hay usuarios en usuarios_repo.get_all_users(). Nada que enviar.")
+        return
 
-    print(f"✅ Ciclo cron OK. Procesados {len(users)} usuarios. Intentos de envío: {enviados}")
+    base_consejo, base_ref = consejo_y_referencia_del_dia()
+    bot = Bot(token=BOT_TOKEN)
+
+    # Enviar secuencialmente (puedes paralelizar con gather si es necesario)
+    for u in usuarios:
+        await enviar_a_usuario(bot, u, base_consejo, base_ref)
+        await asyncio.sleep(0.4)  # pequeño respiro para evitar rate limits
 
 if __name__ == "__main__":
     asyncio.run(main())
