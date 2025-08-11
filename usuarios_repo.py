@@ -1,86 +1,114 @@
-# usuarios_repo.py
-# Gestión sencilla de usuarios en JSON + lógica de envío a las 9:00 locales (ventana 10 min)
+# usuarios_repo.py (backend en Postgres)
+# Guarda suscriptores/ajustes en Postgres: durable y compartido.
 
+from __future__ import annotations
+import os
 import json
-from pathlib import Path
-from typing import Dict, Optional, Any
-from datetime import datetime, date, timezone
 import re
+from datetime import datetime, date, timezone
+from typing import Dict, Any, Optional
+
+import psycopg2
+import psycopg2.extras
 import pytz
 
-import os
-from pathlip import Path 
-USUARIOS_FILE = Path(os.getenv("USERS_PATH", "/data/usuarios.json"))
-VALID_LANG = {"es", "en", "fr", "it", "de", "pt", "nl", "ru", "sr", "hr", "bs", "sh"}
+VALID_LANG = {"es", "en", "fr", "it", "de", "pt", "nl"}
 
-# ----------------- Utilidades básicas de almacenamiento -----------------
+# ------------------ conexión ------------------
 
-def _load_raw() -> Dict[str, Any]:
-    if not USUARIOS_FILE.exists():
-        return {"suscriptores": {}}
-    with USUARIOS_FILE.open("r", encoding="utf-8") as f:
-        return json.load(f)
+def _get_conn():
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        raise RuntimeError("DATABASE_URL no está definida")
+    # habilitamos autocommmit para DDL sencillo
+    conn = psycopg2.connect(url, sslmode="require")
+    conn.autocommit = True
+    return conn
 
-def _save_raw(data: Dict[str, Any]) -> None:
-    USUARIOS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+def init_db() -> None:
+    """Crea tablas si no existen (idempotente). Llamar al arrancar."""
+    sql = """
+    CREATE TABLE IF NOT EXISTS subscribers (
+        chat_id        TEXT PRIMARY KEY,
+        lang           TEXT NOT NULL DEFAULT 'es',
+        city           TEXT,
+        lat            DOUBLE PRECISION,
+        lon            DOUBLE PRECISION,
+        tz             TEXT NOT NULL DEFAULT 'Europe/Madrid',
+        last_sent_iso  TEXT,
+        send_hour_local INTEGER NOT NULL DEFAULT 9,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_subs_tz ON subscribers (tz);
+    """
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql)
 
-def list_users() -> Dict[str, dict]:
-    return _load_raw().get("suscriptores", {})
+def _row_to_dict(row) -> dict:
+    if not row:
+        return {}
+    keys = [desc.name for desc in row.cursor_description] if hasattr(row, "cursor_description") else None
+    if isinstance(row, dict):
+        return dict(row)
+    if hasattr(row, "keys"):
+        return dict(row)
+    # psycopg2 cursor default -> tuple; usamos extras para dict. Por si acaso:
+    return dict(row)
+
+# ------------------ CRUD básico ------------------
 
 def ensure_user(chat_id: str) -> dict:
-    data = _load_raw()
-    sus = data.setdefault("suscriptores", {})
-    u = sus.setdefault(chat_id, {
-        "lang": "es",            # idioma (ISO-2)
-        "city": None,            # nombre ciudad (opcional si hay lat/lon)
-        "lat": None,             # float
-        "lon": None,             # float
-        "tz": "Europe/Madrid",   # zona horaria
-        "last_sent_iso": None,   # fecha local (ISO) del último envío
-        "send_hour_local": 9     # hora local preferida (0-23)
-    })
-    _save_raw(data)
-    return u
+    with _get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM subscribers WHERE chat_id=%s", (str(chat_id),))
+        row = cur.fetchone()
+        if row:
+            return dict(row)
+        cur.execute("""
+            INSERT INTO subscribers (chat_id) VALUES (%s)
+            ON CONFLICT (chat_id) DO NOTHING
+        """, (str(chat_id),))
+        cur.execute("SELECT * FROM subscribers WHERE chat_id=%s", (str(chat_id),))
+        return dict(cur.fetchone())
+
+def list_users() -> Dict[str, dict]:
+    with _get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM subscribers")
+        rows = cur.fetchall()
+        return {r["chat_id"]: dict(r) for r in rows}
 
 def subscribe(chat_id: str) -> dict:
     return ensure_user(chat_id)
 
 def unsubscribe(chat_id: str) -> None:
-    data = _load_raw()
-    if chat_id in data.get("suscriptores", {}):
-        del data["suscriptores"][chat_id]
-        _save_raw(data)
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM subscribers WHERE chat_id=%s", (str(chat_id),))
 
-# ----------------- Preferencias del usuario -----------------
+# ------------------ Preferencias ------------------
 
 def set_lang(chat_id: str, lang: str) -> bool:
     lang = (lang or "").lower().strip()
     if not re.fullmatch(r"[a-z]{2}", lang):
         return False
-    u = ensure_user(chat_id)
-    u["lang"] = lang
-    data = _load_raw()
-    data["suscriptores"][chat_id] = u
-    _save_raw(data)
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            UPDATE subscribers SET lang=%s, updated_at=now() WHERE chat_id=%s
+        """, (lang, str(chat_id)))
     return True
 
 def set_city(chat_id: str, city: Optional[str]) -> None:
-    u = ensure_user(chat_id)
-    u["city"] = city
-    data = _load_raw()
-    data["suscriptores"][chat_id] = u
-    _save_raw(data)
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            UPDATE subscribers SET city=%s, updated_at=now() WHERE chat_id=%s
+        """, (city, str(chat_id)))
 
 def set_location(chat_id: str, lat: float, lon: float, tz: str, city_hint: Optional[str] = None) -> None:
-    u = ensure_user(chat_id)
-    u["lat"] = float(lat)
-    u["lon"] = float(lon)
-    u["tz"] = tz or "Europe/Madrid"
-    if city_hint:
-        u["city"] = city_hint
-    data = _load_raw()
-    data["suscriptores"][chat_id] = u
-    _save_raw(data)
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            UPDATE subscribers
+               SET lat=%s, lon=%s, tz=%s, city=COALESCE(%s, city), updated_at=now()
+             WHERE chat_id=%s
+        """, (float(lat), float(lon), tz or "Europe/Madrid", city_hint, str(chat_id)))
 
 def set_send_hour(chat_id: str, hour_local: int) -> None:
     try:
@@ -88,33 +116,31 @@ def set_send_hour(chat_id: str, hour_local: int) -> None:
     except Exception:
         hour_local = 9
     hour_local = max(0, min(23, hour_local))
-    u = ensure_user(chat_id)
-    u["send_hour_local"] = hour_local
-    data = _load_raw()
-    data["suscriptores"][chat_id] = u
-    _save_raw(data)
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            UPDATE subscribers SET send_hour_local=%s, updated_at=now() WHERE chat_id=%s
+        """, (hour_local, str(chat_id)))
 
-# ----------------- Control de envío diario -----------------
+# ------------------ Control de envío diario ------------------
 
 def mark_sent_today(chat_id: str, local_date: date) -> None:
-    u = ensure_user(chat_id)
-    u["last_sent_iso"] = local_date.isoformat()
-    data = _load_raw()
-    data["suscriptores"][chat_id] = u
-    _save_raw(data)
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            UPDATE subscribers SET last_sent_iso=%s, updated_at=now() WHERE chat_id=%s
+        """, (local_date.isoformat(), str(chat_id)))
 
 def should_send_now(chat: dict, now_utc: Optional[datetime] = None) -> bool:
     """
-    Lógica para ejecutar el cron cada 5 min:
+    Para el cron cada 5 min:
       - Convierte now_utc a hora local del usuario (chat["tz"])
       - Envía si: local_hour == send_hour_local y 0<=min<10 (ventana 10 min)
       - Y si aún no se envió hoy (comparando fecha local con last_sent_iso)
     """
-    tzname = chat.get("tz") or "Europe/Madrid"
+    tzname = (chat.get("tz") or "Europe/Madrid").strip()
     send_hour = int(chat.get("send_hour_local", 9))
+
     if now_utc is None:
         now_utc = datetime.now(timezone.utc)
-
     try:
         tz = pytz.timezone(tzname)
     except Exception:
@@ -125,26 +151,13 @@ def should_send_now(chat: dict, now_utc: Optional[datetime] = None) -> bool:
     local_date = now_local.date()
     last_sent_iso = chat.get("last_sent_iso")
     already_sent_today = (last_sent_iso == local_date.isoformat())
-
     in_window = (now_local.hour == send_hour and 0 <= now_local.minute < 10)
     return in_window and not already_sent_today
 
-# ----------------- Migración segura de estructuras antiguas -----------------
+# --------- Utilidad: obtener “tu” usuario (por chat_id) ---------
 
-def migrate_fill_defaults() -> None:
-    """
-    Añade campos que falten a usuarios existentes. Idempotente.
-    """
-    data = _load_raw()
-    sus = data.setdefault("suscriptores", {})
-    changed = False
-    for uid, u in sus.items():
-        if "lang" not in u: u["lang"] = "es"; changed = True
-        if "city" not in u: u["city"] = None; changed = True
-        if "lat" not in u: u["lat"] = None; changed = True
-        if "lon" not in u: u["lon"] = None; changed = True
-        if "tz" not in u: u["tz"] = "Europe/Madrid"; changed = True
-        if "last_sent_iso" not in u: u["last_sent_iso"] = None; changed = True
-        if "send_hour_local" not in u: u["send_hour_local"] = 9; changed = True
-    if changed:
-        _save_raw(data)
+def get_user(chat_id: str) -> dict:
+    with _get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM subscribers WHERE chat_id=%s", (str(chat_id),))
+        row = cur.fetchone()
+        return dict(row) if row else {}
