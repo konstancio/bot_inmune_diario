@@ -1,5 +1,7 @@
 # bot_worker.py
 # Worker multiusuario: alta/baja, idioma, ciudad, ubicación GPS y hora de envío
+# Bot worker multiusuario: escucha /start, /lang, /city, /when … y deja todo listo para el cron.
+# Seguro frente a "event loop already running" en Railway.
 
 import os
 import logging
@@ -7,159 +9,141 @@ import asyncio
 
 from telegram import Update
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
+    Application, CommandHandler, MessageHandler, filters, ContextTypes
 )
 
-from timezonefinder import TimezoneFinder
-
-# --- almacenamiento de usuarios ---
 from usuarios_repo import (
-    ensure_user,
-    subscribe,
-    unsubscribe,
-    set_lang,
-    set_city,
-    set_location,
-    set_send_hour,
-    list_users,
+    ensure_user, set_lang, set_city, set_location, set_send_hour,
+    subscribe, unsubscribe, list_users, migrate_fill_defaults
 )
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
-log = logging.getLogger("bot_worker")
+log = logging.getLogger("worker")
 
-# ---------- helpers ----------
-def _tz_from_latlon(lat: float, lon: float) -> str:
-    try:
-        tf = TimezoneFinder()
-        tz = tf.timezone_at(lat=lat, lng=lon) or "Europe/Madrid"
-        return tz
-    except Exception:
-        return "Europe/Madrid"
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN")
 
-# ---------- command handlers ----------
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
+# ------------------- Handlers sencillos -------------------
+
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
-    subscribe(chat_id)
+    ensure_user(chat_id)
     await update.message.reply_text(
-        "👋 ¡Hola! Te has suscrito.\n"
+        "¡Hola! Te he suscrito al bot de consejos diarios.\n\n"
         "Comandos útiles:\n"
-        "• /lang es|en|fr|it|de|pt|nl …\n"
-        "• /city NombreCiudad\n"
-        "• Envía tu 📍 ubicación para fijar lat/lon\n"
-        "• /when 9   (hora local de envío 0–23)\n"
-        "• /where    (ver configuración)\n"
-        "• /stop     (anular suscripción)"
+        "• /lang es|en|fr|it|de|pt|nl|ru|hr\n"
+        "• /city NombreDeCiudad (o envíame tu ubicación)\n"
+        "• /when 9  (hora local preferida)\n"
+        "• /stop para dejar de recibir mensajes"
     )
 
-async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
+async def cmd_stop(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     unsubscribe(chat_id)
-    await update.message.reply_text("🛑 Suscripción cancelada. ¡Hasta pronto!")
+    await update.message.reply_text("He eliminado tu suscripción. ¡Hasta otra!")
 
-async def cmd_lang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
+async def cmd_lang(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
-    if not context.args:
-        await update.message.reply_text("Uso: /lang es|en|fr|it|de|pt|nl")
-        return
-    ok = set_lang(chat_id, context.args[0])
+    if not ctx.args:
+        return await update.message.reply_text("Uso: /lang es|en|fr|it|de|pt|nl|ru|hr")
+
+    lang = ctx.args[0].lower()
+    ok = set_lang(chat_id, lang)
     if ok:
-        await update.message.reply_text(f"🌐 Idioma actualizado: {context.args[0].lower()}")
+        await update.message.reply_text(f"Idioma guardado: {lang}")
     else:
-        await update.message.reply_text("❌ Idioma no válido. Usa ISO-2 (p.ej. es, en, fr).")
+        await update.message.reply_text("Formato no válido. Usa dos letras, ej. es/en.")
 
-async def cmd_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = str(update.effective_chat.id)
-    if not context.args:
-        await update.message.reply_text("Uso: /city NombreCiudad")
-        return
-    city = " ".join(context.args).strip()
-    set_city(chat_id, city)
-    await update.message.reply_text(f"🏙️ Ciudad guardada: {city}")
 
-async def cmd_when(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_when(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
-    if not context.args:
-        await update.message.reply_text("Uso: /when 9   (hora local 0–23)")
-        return
+    if not ctx.args:
+        return await update.message.reply_text("Uso: /when 9   (hora local, 0–23)")
+
     try:
-        hour = int(context.args[0])
+        hour = int(ctx.args[0])
     except Exception:
-        await update.message.reply_text("❌ Hora inválida. Usa un entero 0–23.")
-        return
+        return await update.message.reply_text("Hora inválida. Usa un número 0–23.")
     set_send_hour(chat_id, hour)
-    await update.message.reply_text(f"⏰ Enviaré cada día a las {hour:02d}:00 (hora local).")
+    await update.message.reply_text(f"Perfecto, te escribiré cada día a las {hour:02d}:00 (hora local).")
 
-async def cmd_where(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
+async def cmd_city(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
-    u = ensure_user(chat_id)
-    await update.message.reply_text(
-        "📄 Configuración actual:\n"
-        f"• Idioma: {u.get('lang')}\n"
-        f"• Ciudad: {u.get('city')}\n"
-        f"• Lat/Lon: {u.get('lat')}, {u.get('lon')}\n"
-        f"• TZ: {u.get('tz')}\n"
-        f"• Hora envío: {int(u.get('send_hour_local', 9)):02d}:00\n"
-        f"• Último envío: {u.get('last_sent_iso')}"
-    )
+    if not ctx.args:
+        return await update.message.reply_text("Uso: /city NombreDeCiudad")
+    name = " ".join(ctx.args).strip()
+    set_city(chat_id, name)
+    await update.message.reply_text(f"Ciudad preferida guardada: {name}")
 
-# Mensajes de ubicación
-async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.message.location:
-        return
+
+async def handle_location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     loc = update.message.location
-    lat = float(loc.latitude)
-    lon = float(loc.longitude)
-    tz = _tz_from_latlon(lat, lon)
-    set_location(chat_id, lat, lon, tz)
-    await update.message.reply_text(
-        f"📍 Ubicación guardada:\n"
-        f"• Lat/Lon: {lat:.5f}, {lon:.5f}\n"
-        f"• TZ: {tz}"
-    )
+    if not loc:
+        return
+    # Si quieres, aquí podrías resolver zona horaria real con timezonefinder
+    set_location(chat_id, loc.latitude, loc.longitude, tz="Europe/Madrid", city_hint="(GPS)")
+    await update.message.reply_text("¡Ubicación guardada! (lat/lon).")
 
-# ---------- app wiring ----------
-def build_app() -> Application:
-    token = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN")
-    if not token:
+
+async def cmd_debug(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    # pequeño helper para ver cómo estamos guardando
+    users = list_users()
+    me = users.get(str(update.effective_chat.id), {})
+    await update.message.reply_text(f"Tus datos:\n{me}")
+
+
+# ------------------- wiring de la app -------------------
+
+def build_application() -> Application:
+    if not BOT_TOKEN:
         raise RuntimeError("Falta TELEGRAM_BOT_TOKEN (o BOT_TOKEN) en variables de entorno.")
 
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("stop", cmd_stop))
     app.add_handler(CommandHandler("lang", cmd_lang))
-    app.add_handler(CommandHandler("city", cmd_city))
     app.add_handler(CommandHandler("when", cmd_when))
-    app.add_handler(CommandHandler("where", cmd_where))
-
-    app.add_handler(MessageHandler(filters.LOCATION, on_location))
+    app.add_handler(CommandHandler("city", cmd_city))
+    app.add_handler(CommandHandler("debug", cmd_debug))
+    app.add_handler(MessageHandler(filters.LOCATION, handle_location))
 
     return app
 
-# ---------- main / run (con fallback para loops ya activos) ----------
-app = build_app()
 
-async def main():
+async def main_async():
+    migrate_fill_defaults()
+    app = build_application()
+
+    # Arranque “manual” compatible con bucles ya activos:
+    await app.initialize()
+    await app.start()
     log.info("🤖 Bot worker listo. Escuchando comandos…")
-    await app.run_polling(allowed_updates=None)
+
+    # PTB 21.x: usar updater para polling manual
+    await app.updater.start_polling()
+    await app.updater.wait_until_idle()
+
+    await app.stop()
+    await app.shutdown()
+
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
-    except RuntimeError as e:
-        # Fallback si el loop ya está corriendo (algunos entornos)
-        if "event loop is already running" in str(e):
-            import nest_asyncio
-            nest_asyncio.apply()
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(main())
-        else:
-            raise
+        # Si YA hay un loop corriendo (Railway a veces), aplicamos nest_asyncio
+        asyncio.get_running_loop()
+        import nest_asyncio
+        nest_asyncio.apply()
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(main_async())
+    except RuntimeError:
+        # No hay loop: run normal
+        asyncio.run(main_async())
+
