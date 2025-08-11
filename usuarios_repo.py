@@ -8,7 +8,9 @@ from datetime import datetime, date, timezone
 import re
 import pytz
 
-USUARIOS_FILE = Path("usuarios.json")
+import os
+from pathlip import Path 
+USUARIOS_FILE = Path(os.getenv("USERS_PATH", "/data/usuarios.json"))
 VALID_LANG = {"es", "en", "fr", "it", "de", "pt", "nl", "ru", "sr", "hr", "bs", "sh"}
 
 # ----------------- Utilidades básicas de almacenamiento -----------------
