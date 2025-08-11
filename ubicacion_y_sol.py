@@ -99,3 +99,109 @@ def describir_intervalos(intervalos, ciudad: str) -> str:
     if not maniana and not tarde:
         parts.append("🙁 Hoy el Sol no alcanza 30° de elevación.")
     return "\n".join(parts)
+
+# --- Pronóstico con Open-Meteo (sin API key) ------------------------------
+import requests
+from datetime import datetime, timedelta
+
+def _safe_tzname(tzname: str) -> str:
+    # Open-Meteo entiende "auto" o un nombre tipo "Europe/Madrid".
+    # Si el tz falla, usamos "auto".
+    try:
+        return tzname or "auto"
+    except:
+        return "auto"
+
+def obtener_pronostico_diario(fecha, lat: float, lon: float, tzname: str):
+    """
+    Devuelve un dict con datos horarios de nubes (%) y prob. lluvia (%) para la fecha dada.
+    Estructura:
+      {
+        "hora_local_str" -> {"clouds": int, "pop": int}
+      }
+    Si algo falla, devuelve {}.
+    """
+    try:
+        tzparam = _safe_tzname(tzname)
+        # Pedimos 24h alrededor del día para tener margen por zona horaria
+        start = datetime(fecha.year, fecha.month, fecha.day, 0, 0)
+        end   = start + timedelta(days=1)
+
+        url = (
+            "https://api.open-meteo.com/v1/forecast"
+            f"?latitude={lat:.5f}&longitude={lon:.5f}"
+            "&hourly=cloudcover,precipitation_probability"
+            f"&start_date={start.date()}&end_date={end.date()}"
+            f"&timezone={tzparam}"
+        )
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+
+        times   = data.get("hourly", {}).get("time", [])
+        clouds  = data.get("hourly", {}).get("cloudcover", [])
+        pops    = data.get("hourly", {}).get("precipitation_probability", [])
+
+        out = {}
+        for t, c, p in zip(times, clouds, pops):
+            # 't' viene como 'YYYY-MM-DDTHH:00'
+            out[t] = {"clouds": int(c if c is not None else 0),
+                      "pop":    int(p if p is not None else 0)}
+        return out
+    except Exception:
+        return {}
+
+def _media_intervalo(pron_horario: dict, inicio, fin) -> dict | None:
+    """
+    Calcula medias simples de nubes (%) y prob. lluvia (%) entre [inicio, fin].
+    inicio/fin son datetime con tz local.
+    """
+    if not pron_horario:
+        return None
+
+    # Recorremos en pasos de 1 hora redondeando a la hora inferior
+    cur = inicio.replace(minute=0, second=0, microsecond=0)
+    if cur < inicio:
+        cur += timedelta(hours=1)
+
+    vals_c, vals_p = [], []
+    while cur <= fin:
+        key = cur.strftime("%Y-%m-%dT%H:00")
+        if key in pron_horario:
+            vals_c.append(pron_horario[key]["clouds"])
+            vals_p.append(pron_horario[key]["pop"])
+        cur += timedelta(hours=1)
+
+    if not vals_c:
+        return None
+
+    nubes = round(sum(vals_c) / len(vals_c))
+    pop   = round(sum(vals_p) / len(vals_p))
+    # Etiqueta rápida según nubes
+    if nubes <= 25:
+        estado = "despejado"
+    elif nubes <= 60:
+        estado = "parcialmente nublado"
+    else:
+        estado = "nublado"
+
+    return {"estado": estado, "nubes": nubes, "lluvia": pop}
+
+def formatear_intervalos_meteo(intervalos, pron_horario: dict) -> str:
+    """
+    Añade, si hay datos, una línea con el tiempo en cada tramo.
+    intervalos: lista de (inicio_dt_local, fin_dt_local)
+    """
+    if not intervalos or not pron_horario:
+        return ""
+
+    lineas = []
+    for idx, (ini, fin) in enumerate(intervalos, start=1):
+        m = _media_intervalo(pron_horario, ini, fin)
+        if not m:
+            continue
+        etiqueta = "Mañana" if idx == 1 else "Tarde"
+        lineas.append(
+            f"   (🌤 {etiqueta}: {m['estado']}, nubes {m['nubes']}%, lluvia {m['lluvia']}%)"
+        )
+    return ("\n" + "\n".join(lineas)) if lineas else ""
