@@ -17,7 +17,8 @@ from usuarios_repo import (
 )
 from ubicacion_y_sol import (
     obtener_ubicacion,              # fallback general
-    calcular_intervalos_optimos,      # fórmula precisa con EoT y longitud
+    calcular_intervalos_optimos, # fórmula precisa con EoT y longitud
+    describir intervalos,
     obtener_pronostico_diario,      # Open-Meteo, sin API key
     formatear_intervalos_meteo,     # añade icono + estado + temp
 )
