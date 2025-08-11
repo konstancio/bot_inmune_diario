@@ -14,7 +14,7 @@ from telegram.ext import (
     filters,
 )
 from usuarios_repo import (
-    init_db init_db
+    init_db
     subscribe,
     unsubscribe,
     set_lang,
@@ -24,7 +24,7 @@ from usuarios_repo import (
     list_users,
     ensure_user,
 )
-
+init_db()
 TOKEN = os.getenv("BOT_TOKEN")
 
 
