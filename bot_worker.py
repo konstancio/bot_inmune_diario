@@ -146,4 +146,3 @@ if __name__ == "__main__":
     except RuntimeError:
         # No hay loop: run normal
         asyncio.run(main_async())
-
