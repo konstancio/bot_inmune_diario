@@ -14,6 +14,7 @@ from telegram.ext import (
     filters,
 )
 from usuarios_repo import (
+    init_db init_db
     subscribe,
     unsubscribe,
     set_lang,
