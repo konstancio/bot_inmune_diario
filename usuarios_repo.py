@@ -17,9 +17,9 @@ VALID_LANG = {"es", "en", "fr", "it", "de", "pt", "nl"}
 # ------------------ conexión ------------------
 
 def _get_conn():
-    url = os.getenv("DATABASE_URL")
+    url = os.getenv("DATABASE_DSN")
     if not url:
-        raise RuntimeError("DATABASE_URL no está definida")
+        raise RuntimeError("DATABASE_DSN no está definida")
     # habilitamos autocommmit para DDL sencillo
     conn = psycopg2.connect(url, sslmode="require")
     conn.autocommit = True
