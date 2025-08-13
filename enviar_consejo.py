@@ -1,4 +1,5 @@
-# enviar_consejo.py — multiusuario: 9:00 locales + no duplicados + traducción + meteo + 30–40°
+# enviar_consejo.py — cron cada 5': envía a las 09:00 locales (sin duplicados)
+# Traducción, meteo y tramos solares 30–40° (mañana/tarde).
 
 import os
 import asyncio
@@ -17,20 +18,21 @@ from usuarios_repo import (
     list_users,
     should_send_now,
     mark_sent_today,
+    # si no tienes migrate_fill_defaults, comenta la import y la llamada más abajo
     migrate_fill_defaults,
 )
 
-# Usamos tus utilidades existentes (¡sin Astral!):
+# Utilidades existentes en tu repo (¡sin Astral!):
 from ubicacion_y_sol import (
-    obtener_ubicacion,              # fallback general si no hay datos del usuario
-    calcular_intervalos_optimos,    # devuelve los tramos 30–40° (mañana y tarde)
-    obtener_pronostico_diario,      # Open-Meteo, sin API key
-    formatear_intervalos_meteo,     # añade icono + estado + temp a los tramos
+    obtener_ubicacion,            # fallback general si falta info de usuario
+    calcular_intervalos_optimos,  # devuelve tramos 30–40° (mañana y tarde)
+    obtener_pronostico_diario,    # Open-Meteo
+    formatear_intervalos_meteo,   # texto bonito con meteo + tramos
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ONLY_CHAT_ID = os.getenv("ONLY_CHAT_ID")
-FORCE_SEND   = os.getenv("FORCE_SEND", "0") == "1"
+ONLY_CHAT_ID = os.getenv("ONLY_CHAT_ID")           # si se define, solo envía a ese chat
+FORCE_SEND   = os.getenv("FORCE_SEND", "0") == "1" # ignora hora/duplicados
 
 # ---------- Traducción ----------
 
@@ -39,12 +41,8 @@ def _norm_lang(code: Optional[str]) -> str:
         return "es"
     code = code.strip().lower()
     alias = {
-        "sh": "sr",   # serbocroata → serbio como proxy
-        "sc": "sr",
-        "srp": "sr",
-        "cro": "hr",
-        "ser": "sr",
-        "bos": "bs",
+        "sh": "sr", "sc": "sr", "srp": "sr",
+        "cro": "hr", "ser": "sr", "bos": "bs",
         "pt-br": "pt",
     }
     return alias.get(code, code)
@@ -80,11 +78,11 @@ def geocodificar_ciudad(ciudad: str):
 # ---------- Envío a un usuario ----------
 
 async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime):
-    # ¿Toca enviar ahora para este usuario?
-    if not should_send_now(prefs, now_utc=now_utc):
+    # Respetar ventana horaria salvo FORCE_SEND
+    if not FORCE_SEND and not should_send_now(prefs, now_utc=now_utc):
         return
 
-    # Determinar ubicación priorizando GPS > ciudad > fallback
+    # Ubicación priorizando GPS > ciudad > fallback genérico
     lat = prefs.get("lat")
     lon = prefs.get("lon")
     tzname = prefs.get("tz")
@@ -102,7 +100,7 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetim
             ub = obtener_ubicacion()
             lat, lon, tzname, ciudad = float(ub["latitud"]), float(ub["longitud"]), ub["timezone"], ub["ciudad"]
 
-    # Fecha/hora local del usuario
+    # Fecha/hora local
     try:
         tz = pytz.timezone(tzname)
     except Exception:
@@ -110,6 +108,11 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetim
         tzname = "Europe/Madrid"
     now_local = now_utc.astimezone(tz)
     hoy_local = now_local.date()
+
+    # Log de depuración
+    print(f"[DBG] chat={chat_id} tz={tzname} now_local={now_local.isoformat()} "
+          f"send_hour={prefs.get('send_hour_local')} last_sent={prefs.get('last_sent_iso')} "
+          f"force={FORCE_SEND}")
 
     # Consejo + referencia del día (pares) según día local; rotación estable por fecha
     dia_semana = now_local.weekday()  # lunes=0
@@ -121,18 +124,17 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetim
     idx = now_local.toordinal() % len(pares)
     consejo_es, referencia_es = pares[idx]
 
-    # Intervalos 30–40° (mañana y tarde) + meteo
-    # ⬇️ Antes llamabas a 'calcular_intervalos_30_40', que no existe; usamos tu función real:
+    # Tramos 30–40° + meteo
     tramo_m, tramo_t = calcular_intervalos_optimos(hoy_local, lat, lon, tzname)
     pron = obtener_pronostico_diario(lat, lon, hoy_local, tzname)
     intervalos_es = formatear_intervalos_meteo(tramo_m, tramo_t, ciudad, pron)
 
-    # Traducción al idioma del usuario (consejo + referencia + intervalos)
+    # Construcción + traducción
     lang = prefs.get("lang", "es")
     cuerpo = f"{consejo_es}\n\n{referencia_es}\n\n{intervalos_es}"
     cuerpo = traducir(cuerpo, lang)
 
-    # Telegram: límite 4096 chars
+    # Límite Telegram
     if len(cuerpo) > 4000:
         cuerpo = cuerpo[:3990] + "…"
 
@@ -148,7 +150,7 @@ async def main():
     if not BOT_TOKEN:
         raise RuntimeError("❌ Faltan variables de entorno: BOT_TOKEN")
 
-    # Asegura esquema y columnas nuevas
+    # Asegura esquema / migración suave
     try:
         init_db()
     except Exception as e:
@@ -167,8 +169,10 @@ async def main():
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     intentos = 0
 
+    print(f"[DBG] ONLY_CHAT_ID={ONLY_CHAT_ID} FORCE_SEND={FORCE_SEND}")
+
     for uid, prefs in users.items():
-        if ONLY_CHAT_ID and uid != ONLY_CHAT_ID: 
+        if ONLY_CHAT_ID and uid != ONLY_CHAT_ID:
             continue
         try:
             await enviar_a_usuario(bot, uid, prefs, now_utc)
