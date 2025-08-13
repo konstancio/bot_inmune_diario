@@ -29,6 +29,8 @@ from ubicacion_y_sol import (
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+ONLY_CHAT_ID = os.getenv("ONLY_CHAT_ID")
+FORCE_SEND = os.getenv(FORCE_SEND") == "1"
 
 # ---------- Traducción ----------
 
@@ -166,6 +168,8 @@ async def main():
     intentos = 0
 
     for uid, prefs in users.items():
+        if ONLY_CHAT_ID and uid != ONLY_CHAT_ID: 
+        continue
         try:
             await enviar_a_usuario(bot, uid, prefs, now_utc)
             intentos += 1
