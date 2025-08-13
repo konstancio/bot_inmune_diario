@@ -161,3 +161,21 @@ def get_user(chat_id: str) -> dict:
         cur.execute("SELECT * FROM subscribers WHERE chat_id=%s", (str(chat_id),))
         row = cur.fetchone()
         return dict(row) if row else {}
+
+def migrate_fill_defaults() -> None:
+    """
+    Migración idempotente para asegurar columnas esperadas en 'subscribers'.
+    No falla si ya existen.
+    """
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS lang TEXT NOT NULL DEFAULT 'es';")
+        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS city TEXT;")
+        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION;")
+        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS lon DOUBLE PRECISION;")
+        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS tz TEXT NOT NULL DEFAULT 'Europe/Madrid';")
+        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS last_sent_iso TEXT;")
+        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS send_hour_local INTEGER NOT NULL DEFAULT 9;")
+        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();")
+        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();")
+        # Índice útil si no existe
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_subs_tz ON subscribers (tz);")
