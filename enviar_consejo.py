@@ -169,7 +169,7 @@ async def main():
 
     for uid, prefs in users.items():
         if ONLY_CHAT_ID and uid != ONLY_CHAT_ID: 
-        continue
+            continue
         try:
             await enviar_a_usuario(bot, uid, prefs, now_utc)
             intentos += 1
