@@ -13,8 +13,8 @@ import pytz
 
 from consejos_diarios import consejos
 from usuarios_repo import ( init_db,
-    list_users, should_send_now, mark_sent_today, migrate_fill_defaults
-init_db )
+    list_users, should_send_now, mark_sent_today, migrate_fill_defaults )
+init_db()
 from ubicacion_y_sol import (
     obtener_ubicacion,              # fallback general
     calcular_intervalos_optimos, # fórmula precisa con EoT y longitud
