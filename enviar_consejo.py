@@ -1,10 +1,10 @@
-# enviar_consejo.py — cron cada 5': envía a las 09:00 locales (sin duplicados)
-# Traducción, meteo y tramos solares 30–40° usando tu módulo ubicacion_y_sol.py
+# enviar_consejo.py — cron cada 5': 09:00 locales, ventanas 30–40° (mañana/tarde) + Plan B nutricional por estación
+# Incluye: traducción, meteo, DB Postgres, y guardarraíl para no repetir (incluso con FORCE_SEND=1).
 
 import os
 import asyncio
 import datetime
-from typing import Optional
+from typing import Optional, List, Tuple, Any
 
 from telegram import Bot
 from deep_translator import LibreTranslator
@@ -13,26 +13,26 @@ from timezonefinder import TimezoneFinder
 import pytz
 
 from consejos_diarios import consejos
+from consejos_nutri import CONSEJOS_NUTRI  # ← diccionario en archivo aparte
 from usuarios_repo import (
-    init_db,
-    list_users,
-    should_send_now,
-    mark_sent_today,
-    migrate_fill_defaults,   # si no la tienes, puedes comentarla y también su llamada en main()
+    init_db, list_users, should_send_now, mark_sent_today, migrate_fill_defaults
 )
 
-# === IMPORTS CORRECTOS DE TU MÓDULO ===
+# === Módulo solar/meteo de tu repo ===
 from ubicacion_y_sol import (
-    obtener_ubicacion,             # fallback si falta info de usuario
-    calcular_intervalos_optimos,   # <- ESTA ES LA TUYA
-    obtener_pronostico_diario,
-    formatear_intervalos_meteo,    # puede aceptar 2, 3 o 4 argumentos según tu versión
+    obtener_ubicacion,             # fallback si falta info
+    calcular_intervalos_optimos,   # devuelve ventanas 30–40°
+    obtener_pronostico_diario,     # Open-Meteo (o similar)
+    formatear_intervalos_meteo,    # salida “bonita” (opcional, ver flag SHOW_FORMATO_METEO)
 )
+
+# ---------- Flags de comportamiento (fáciles de quitar) ----------
+SHOW_FORMATO_METEO = True   # ← Pon False si no quieres la línea extra de meteo formateada
 
 # ---------- Variables de entorno ----------
-BOT_TOKEN   = os.getenv("BOT_TOKEN")
-FORCE_SEND  = os.getenv("FORCE_SEND", "0") == "1"
-ONLY_CHAT_ID = os.getenv("ONLY_CHAT_ID")
+BOT_TOKEN    = os.getenv("BOT_TOKEN")
+FORCE_SEND   = os.getenv("FORCE_SEND", "0") == "1"   # si está en 1, fuerza envío (una vez al día gracias al guardarraíl)
+ONLY_CHAT_ID = os.getenv("ONLY_CHAT_ID")             # si lo pones, solo envía a ese chat
 
 # ---------- Traducción ----------
 def _norm_lang(code: Optional[str]) -> str:
@@ -68,57 +68,110 @@ def geocodificar_ciudad(ciudad: str):
         print(f"⚠️ Geocodificación fallida ({ciudad}): {e}")
         return None
 
-# ===== Wrappers de compatibilidad para ubicacion_y_sol.py =====
-# (Por si las firmas difieren entre versiones; evitan errores tipo 'float'...'timetuple' o nº de args)
-def _calc_tramos_compat(hoy_local, lat, lon, tzname):
+# ---------- Compatibilidad firmas (por si tu módulo cambia el orden de parámetros) ----------
+def _calc_tramos_compat(fecha_loc, lat, lon, tzname):
     try:
-        return calcular_intervalos_optimos(fecha=hoy_local, lat=lat, lon=lon, tz=tzname)
+        return calcular_intervalos_optimos(fecha=fecha_loc, lat=lat, lon=lon, tz=tzname)
     except TypeError:
         pass
     for args in [
-        (hoy_local, lat, lon, tzname),
-        (lat, lon, tzname, hoy_local),
-        (tzname, hoy_local, lat, lon),
-        (lat, lon, hoy_local, tzname),
+        (fecha_loc, lat, lon, tzname),
+        (lat, lon, tzname, fecha_loc),
+        (tzname, fecha_loc, lat, lon),
+        (lat, lon, fecha_loc, tzname),
     ]:
         try:
             return calcular_intervalos_optimos(*args)
         except Exception:
             continue
-    print("[ERR] No se pudo llamar a calcular_intervalos_optimos con ninguna firma conocida.")
+    print("[ERR] calcular_intervalos_optimos: no se identificó firma. Devolviendo None.")
     return None, None
 
-def _pronostico_compat(lat, lon, hoy_local, tzname):
+def _pronostico_compat(lat, lon, fecha_loc, tzname):
     try:
-        return obtener_pronostico_diario(lat=lat, lon=lon, fecha=hoy_local, tz=tzname)
+        return obtener_pronostico_diario(lat=lat, lon=lon, fecha=fecha_loc, tz=tzname)
     except TypeError:
         pass
-    for args in [(lat, lon, hoy_local, tzname), (lat, lon, tzname, hoy_local)]:
+    for args in [(lat, lon, fecha_loc, tzname), (lat, lon, tzname, fecha_loc)]:
         try:
             return obtener_pronostico_diario(*args)
         except Exception:
             continue
-    print("[WARN] obtener_pronostico_diario devolvió None (no se identificó firma).")
+    print("[WARN] obtener_pronostico_diario: no se identificó firma. Devolviendo None.")
     return None
 
-def _formatear_compat(tramo_m, tramo_t, ciudad, pron):
-    import inspect
+# ---------- Estación del año (considera hemisferio por latitud) ----------
+def estacion_del_anio(fecha: datetime.date, lat: Optional[float]) -> str:
+    Y = fecha.year
+    prim_i, ver_i, oto_i, inv_i = (datetime.date(Y,3,20), datetime.date(Y,6,21),
+                                   datetime.date(Y,9,23), datetime.date(Y,12,21))
+    norte = (lat is None) or (lat >= 0.0)
+    if norte:
+        if prim_i <= fecha < ver_i:  return "Primavera"
+        if ver_i  <= fecha < oto_i:  return "Verano"
+        if oto_i  <= fecha < inv_i:  return "Otoño"
+        return "Invierno"
+    else:
+        if prim_i <= fecha < ver_i:  return "Otoño"
+        if ver_i  <= fecha < oto_i:  return "Invierno"
+        if oto_i  <= fecha < inv_i:  return "Primavera"
+        return "Verano"
+
+# ---------- Formateo de ventanas y meteo ----------
+def _fmt_hhmm(dtobj: datetime.datetime) -> str:
+    return dtobj.strftime("%H:%M")
+
+def _normalize_tramos(tramo) -> List[Tuple[datetime.datetime, datetime.datetime]]:
+    if not tramo:
+        return []
+    if isinstance(tramo, tuple) and len(tramo) == 2:
+        return [tramo]
+    if isinstance(tramo, list):
+        return [t for t in tramo if isinstance(t, tuple) and len(t) == 2]
+    return []
+
+def _tramos_a_texto(tramo_m, tramo_t) -> str:
+    m = _normalize_tramos(tramo_m)
+    t = _normalize_tramos(tramo_t)
+    partes = []
+    if m:
+        rangos = ", ".join(f"{_fmt_hhmm(a)}–{_fmt_hhmm(b)}" for a,b in m)
+        partes.append(f"☀️ Mañana: {rangos}")
+    if t:
+        rangos = ", ".join(f"{_fmt_hhmm(a)}–{_fmt_hhmm(b)}" for a,b in t)
+        partes.append(f"🌇 Tarde: {rangos}")
+    if not partes:
+        return "Hoy no hay ventanas solares seguras (30–40°)."
+    return "\n".join(partes)
+
+def _meteo_impide_sintesis(pron: Any, tramo_m, tramo_t) -> bool:
+    if not pron:
+        # si no sabemos, no bloqueamos por meteo (pero si no hay tramos, Plan B)
+        return (not _normalize_tramos(tramo_m) and not _normalize_tramos(tramo_t))
     try:
-        n = len(inspect.signature(formatear_intervalos_meteo).parameters)
+        cc = None
+        for k in ("cloudcover_mean","cloudcover","clouds","nubes"):
+            if isinstance(pron, dict) and k in pron:
+                cc = pron[k]; break
+        if isinstance(cc, (int,float)) and cc >= 80:
+            return True
+        pr = None
+        for k in ("total_precipitation","precipitation","rain","lluvia"):
+            if isinstance(pron, dict) and k in pron:
+                pr = pron[k]; break
+        if isinstance(pr, (int,float)) and pr > 0.1:
+            return True
+        wc = pron.get("weathercode") if isinstance(pron, dict) else None
+        if isinstance(wc, int) and wc >= 51:  # llovizna/lluvia/chubascos
+            return True
+        cond = pron.get("condition") if isinstance(pron, dict) else None
+        if isinstance(cond, str) and cond.lower() in ("overcast","cloudy","rain","storm","tormenta","lluvia","muy nuboso"):
+            return True
     except Exception:
-        n = 2
-    try:
-        if n >= 4:
-            return formatear_intervalos_meteo(tramo_m, tramo_t, ciudad, pron)
-        elif n == 3:
-            return formatear_intervalos_meteo(tramo_m, tramo_t, ciudad)
-        else:
-            return formatear_intervalos_meteo(tramo_m, tramo_t)
-    except TypeError:
-        try:
-            return formatear_intervalos_meteo(tramo_m, tramo_t, ciudad)
-        except Exception:
-            return formatear_intervalos_meteo(tramo_m, tramo_t)
+        pass
+    if not _normalize_tramos(tramo_m) and not _normalize_tramos(tramo_t):
+        return True
+    return False
 
 # ---------- Envío a un usuario ----------
 async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime):
@@ -126,12 +179,20 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetim
     if not FORCE_SEND and not should_send_now(prefs, now_utc=now_utc):
         return
 
-    # Ubicación priorizando GPS > ciudad > fallback
-    lat = prefs.get("lat")
-    lon = prefs.get("lon")
-    tzname = prefs.get("tz")
-    ciudad = prefs.get("city")
+    # Evitar duplicados incluso forzando (máx 1/día por usuario)
+    try:
+        tz = pytz.timezone(prefs.get("tz", "Europe/Madrid"))
+    except Exception:
+        tz = pytz.timezone("Europe/Madrid")
+    now_local = now_utc.astimezone(tz)
+    hoy_local = now_local.date()
+    if prefs.get("last_sent_iso") == hoy_local.isoformat():
+        print(f"[DBG] skip {chat_id}: ya enviado hoy")
+        return
 
+    # Ubicación priorizando GPS > city > fallback
+    lat = prefs.get("lat"); lon = prefs.get("lon")
+    tzname = prefs.get("tz"); ciudad = prefs.get("city")
     if lat is None or lon is None or not tzname:
         if ciudad:
             geo = geocodificar_ciudad(ciudad)
@@ -144,49 +205,49 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetim
             ub = obtener_ubicacion()
             lat, lon, tzname, ciudad = float(ub["latitud"]), float(ub["longitud"]), ub["timezone"], ub["ciudad"]
 
-    # Fecha/hora local
-    try:
-        tz = pytz.timezone(tzname)
-    except Exception:
-        tz = pytz.timezone("Europe/Madrid")
-        tzname = "Europe/Madrid"
-    now_local = now_utc.astimezone(tz)
-    hoy_local = now_local.date()
-
-    print(f"[DBG] chat={chat_id} tz={tzname} now_local={now_local.isoformat()} "
-          f"send_hour={prefs.get('send_hour_local')} last_sent={prefs.get('last_sent_iso')} force={FORCE_SEND}")
-
-    # Consejo + referencia (rotación estable por fecha)
+    # Consejo + referencia del día
     dia_semana = now_local.weekday()
     lista_dia = consejos[dia_semana]
     pares = [lista_dia[i:i+2] for i in range(0, len(lista_dia), 2)]
     if not pares:
-        print("⚠️ 'consejos' para este día está vacío.")
+        print("⚠️ 'consejos' vacío para este día.")
         return
-    idx = now_local.toordinal() % len(pares)
-    consejo_es, referencia_es = pares[idx]
+    consejo_es, referencia_es = pares[now_local.toordinal() % len(pares)]
 
-    # Tramos 30–40° + meteo (con wrappers de compatibilidad)
+    # Ventanas solares + pronóstico
     tramo_m, tramo_t = _calc_tramos_compat(hoy_local, lat, lon, tzname)
-    print(f"[DBG] tramos: mañana={tramo_m} tarde={tramo_t}")
-
     pron = _pronostico_compat(lat, lon, hoy_local, tzname)
-    print(f"[DBG] meteo: {pron}")
+    print(f"[DBG] {chat_id} tz={tzname} tramos_m={tramo_m} tramos_t={tramo_t} pron={pron}")
 
-    try:
-        intervalos_es = _formatear_compat(tramo_m, tramo_t, ciudad, pron)
-    except Exception as e:
-        print(f"[WARN] formatear_intervalos_meteo compat: {e}")
-        if not tramo_m and not tramo_t:
-            intervalos_es = f"Hoy no hay ventanas solares 30–40° útiles en {ciudad}."
-        else:
-            intervalos_es = "Ventanas solares calculadas correctamente."
+    # Texto de tramos o Plan B por estación
+    if _meteo_impide_sintesis(pron, tramo_m, tramo_t):
+        est = estacion_del_anio(hoy_local, lat)
+        texto_tramos = (
+            "⛅ Hoy no se esperan ventanas útiles de sol para sintetizar vitamina D.\n"
+            f"🍽️ Consejo de temporada ({est}): {CONSEJOS_NUTRI[est]}"
+        )
+    else:
+        texto_tramos = _tramos_a_texto(tramo_m, tramo_t)
+        # (opcional y fácil de quitar) añade debajo la línea de meteo formateada de tu módulo:
+        if SHOW_FORMATO_METEO:
+            try:
+                extra = formatear_intervalos_meteo(tramo_m, tramo_t, ciudad, pron)
+                if extra and isinstance(extra, str):
+                    texto_tramos += f"\n({extra})"
+            except TypeError:
+                # versiones con menos argumentos
+                try:
+                    extra = formatear_intervalos_meteo(tramo_m, tramo_t, ciudad)
+                    if extra and isinstance(extra, str):
+                        texto_tramos += f"\n({extra})"
+                except Exception:
+                    pass
 
-    # Mensaje traducido
+    # Mensaje final + traducción
     lang = prefs.get("lang", "es")
-    cuerpo = f"{consejo_es}\n\n{referencia_es}\n\n{intervalos_es}"
+    cuerpo = f"{consejo_es}\n\n{referencia_es}\n\n{texto_tramos}"
     cuerpo = traducir(cuerpo, lang)
-    if len(cuerpo) > 4000:
+    if len(cuerpo) > 4000:  # límite Telegram
         cuerpo = cuerpo[:3990] + "…"
 
     # Enviar y marcar
@@ -196,7 +257,6 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetim
     except Exception as e:
         print(f"[ERR] Telegram send_message {chat_id}: {e}")
         return
-
     mark_sent_today(chat_id, hoy_local)
 
 # ---------- Main ----------
@@ -204,18 +264,14 @@ async def main():
     if not BOT_TOKEN:
         raise RuntimeError("❌ Faltan variables de entorno: BOT_TOKEN")
 
-    try:
-        init_db()
-    except Exception as e:
-        print(f"[WARN] init_db: {e}")
-    try:
-        migrate_fill_defaults()
-    except Exception as e:
-        print(f"[WARN] migrate_fill_defaults: {e}")
+    try: init_db()
+    except Exception as e: print(f"[WARN] init_db: {e}")
+    try: migrate_fill_defaults()
+    except Exception as e: print(f"[WARN] migrate_fill_defaults: {e}")
 
     bot = Bot(token=BOT_TOKEN)
 
-    # Ping de diagnóstico (opcional)
+    # PING opcional si estás probando
     if FORCE_SEND and ONLY_CHAT_ID:
         try:
             await bot.send_message(chat_id=ONLY_CHAT_ID, text="✅ Ping de diagnóstico (FORCE_SEND activo).")
@@ -231,18 +287,17 @@ async def main():
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     print(f"[DBG] ONLY_CHAT_ID={ONLY_CHAT_ID} FORCE_SEND={FORCE_SEND}")
 
-    enviados = 0
+    procesados = 0
     for uid, prefs in users.items():
         if ONLY_CHAT_ID and uid != ONLY_CHAT_ID:
             continue
         try:
             await enviar_a_usuario(bot, uid, prefs, now_utc)
-            enviados += 1
+            procesados += 1
         except Exception as e:
             print(f"❌ Error enviando a {uid}: {e}")
 
-    print(f"✅ Ciclo cron OK. Usuarios procesados: {len(users)}. Intentos de envío: {enviados}")
+    print(f"✅ Ciclo cron OK. Usuarios procesados: {procesados} / {len(users)}")
 
 if __name__ == "__main__":
     asyncio.run(main())
-
