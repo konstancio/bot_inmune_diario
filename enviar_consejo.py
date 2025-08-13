@@ -74,7 +74,35 @@ def geocodificar_ciudad(ciudad: str):
     except Exception as e:
         print(f"⚠️ Geocodificación fallida ({ciudad}): {e}")
         return None
+        
+# --- Compatibilidad con ubicacion_y_sol.py (acepte kwargs o no) ---
 
+def _calc_tramos_compat(hoy_local, lat, lon, tzname):
+    # 1) intento con nombres (fecha, lat, lon, tz)
+    try:
+        return calcular_intervalos_optimos(fecha=hoy_local, lat=lat, lon=lon, tz=tzname)
+    except TypeError:
+        pass
+    # 2) intento con orden alternativo (lat, lon, tz, fecha)
+    try:
+        return calcular_intervalos_optimos(lat, lon, tzname, hoy_local)
+    except Exception as e:
+        print(f"[ERR] calcular_intervalos_optimos compat: {e}")
+        return None, None
+
+def _pronostico_compat(lat, lon, hoy_local, tzname):
+    # 1) intento con nombres
+    try:
+        return obtener_pronostico_diario(lat=lat, lon=lon, fecha=hoy_local, tz=tzname)
+    except TypeError:
+        pass
+    # 2) intento con orden alternativo
+    try:
+        return obtener_pronostico_diario(lat, lon, hoy_local, tzname)
+    except Exception as e:
+        print(f"[ERR] obtener_pronostico_diario compat: {e}")
+        return None
+        
 # ---------- Envío a un usuario ----------
 
 async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime):
@@ -125,8 +153,10 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetim
     consejo_es, referencia_es = pares[idx]
 
     # Tramos 30–40° + meteo
-    tramo_m, tramo_t = calcular_intervalos_optimos(hoy_local, lat, lon, tzname)
-    pron = obtener_pronostico_diario(lat, lon, hoy_local, tzname)
+    tramo_m, tramo_t = _calc_tramos_compat(hoy_local, lat, lon, tzname)
+    pron = _pronostico_compat(lat, lon, hoy_local, tzname)
+    print(f"[DBG] tramos: mañana={tramo_m} tarde={tramo_t}")
+    print(f"[DBG] meteo: {pron}")
     intervalos_es = formatear_intervalos_meteo(tramo_m, tramo_t, ciudad, pron)
 
     # Construcción + traducción
