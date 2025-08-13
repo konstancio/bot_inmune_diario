@@ -102,6 +102,90 @@ def _pronostico_compat(lat, lon, hoy_local, tzname):
     except Exception as e:
         print(f"[ERR] obtener_pronostico_diario compat: {e}")
         return None
+
+# ===== Wrappers de compatibilidad para ubicacion_y_sol.py =====
+from datetime import datetime, date
+
+def _as_date(x):
+    return isinstance(x, (datetime, date))
+
+def _calc_tramos_compat(hoy_local, lat, lon, tzname):
+    """
+    Intenta varias firmas habituales:
+    - (fecha, lat, lon, tz)
+    - (lat, lon, tz, fecha)
+    - (tz, fecha, lat, lon)
+    - (lat, lon, fecha, tz)
+    """
+    try:
+        # 1) con kwargs típicos
+        return calcular_intervalos_optimos(fecha=hoy_local, lat=lat, lon=lon, tz=tzname)
+    except TypeError:
+        pass
+    # 2) probar permutaciones más frecuentes
+    for args in [
+        (hoy_local, lat, lon, tzname),
+        (lat, lon, tzname, hoy_local),
+        (tzname, hoy_local, lat, lon),
+        (lat, lon, hoy_local, tzname),
+    ]:
+        try:
+            return calcular_intervalos_optimos(*args)
+        except Exception as e:
+            # si el error es claramente por tipos, seguimos intentando
+            continue
+    print("[ERR] No se pudo llamar a calcular_intervalos_optimos con ninguna firma conocida.")
+    return None, None
+
+def _pronostico_compat(lat, lon, hoy_local, tzname):
+    """
+    Intenta varias firmas habituales para el pronóstico:
+    - (lat, lon, fecha, tz)
+    - (lat, lon, tz, fecha)
+    - kwargs
+    """
+    try:
+        return obtener_pronostico_diario(lat=lat, lon=lon, fecha=hoy_local, tz=tzname)
+    except TypeError:
+        pass
+    for args in [
+        (lat, lon, hoy_local, tzname),
+        (lat, lon, tzname, hoy_local),
+    ]:
+        try:
+            return obtener_pronostico_diario(*args)
+        except Exception:
+            continue
+    print("[WARN] obtener_pronostico_diario devolvió None (no se identificó firma).")
+    return None
+
+def _formatear_compat(tramo_m, tramo_t, ciudad, pron):
+    """
+    La función de tu repo puede aceptar:
+    - (tramo_m, tramo_t)    -> 2 args
+    - (tramo_m, tramo_t, ciudad) -> 3 args
+    - (tramo_m, tramo_t, ciudad, pron) -> 4 args
+    Elegimos la más completa que soporte.
+    """
+    import inspect
+    try:
+        n = len(inspect.signature(formatear_intervalos_meteo).parameters)
+    except Exception:
+        n = 2  # fallback
+
+    try:
+        if n >= 4:
+            return formatear_intervalos_meteo(tramo_m, tramo_t, ciudad, pron)
+        elif n == 3:
+            return formatear_intervalos_meteo(tramo_m, tramo_t, ciudad)
+        else:
+            return formatear_intervalos_meteo(tramo_m, tramo_t)
+    except TypeError:
+        # si falló por número de args, degradamos
+        try:
+            return formatear_intervalos_meteo(tramo_m, tramo_t, ciudad)
+        except Exception:
+            return formatear_intervalos_meteo(tramo_m, tramo_t)
         
 # ---------- Envío a un usuario ----------
 
@@ -154,11 +238,20 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetim
 
     # Tramos 30–40° + meteo
     tramo_m, tramo_t = _calc_tramos_compat(hoy_local, lat, lon, tzname)
-    pron = _pronostico_compat(lat, lon, hoy_local, tzname)
-    print(f"[DBG] tramos: mañana={tramo_m} tarde={tramo_t}")
-    print(f"[DBG] meteo: {pron}")
-    intervalos_es = formatear_intervalos_meteo(tramo_m, tramo_t, ciudad, pron)
+print(f"[DBG] tramos: mañana={tramo_m} tarde={tramo_t}")
 
+pron = _pronostico_compat(lat, lon, hoy_local, tzname)
+print(f"[DBG] meteo: {pron}")
+
+try:
+    intervalos_es = _formatear_compat(tramo_m, tramo_t, ciudad, pron)
+except Exception as e:
+    print(f"[WARN] formatear_intervalos_meteo compat: {e}")
+    if not tramo_m and not tramo_t:
+        intervalos_es = f"Hoy no hay ventanas solares 30–40° útiles en {ciudad}."
+    else:
+        intervalos_es = "Ventanas solares calculadas correctamente."
+        
     # Construcción + traducción
     lang = prefs.get("lang", "es")
     cuerpo = f"{consejo_es}\n\n{referencia_es}\n\n{intervalos_es}"
