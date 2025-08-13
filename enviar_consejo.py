@@ -1,5 +1,6 @@
 # enviar_consejo.py — cron cada 5': 09:00 locales, ventanas 30–40° (mañana/tarde) + Plan B nutricional por estación
-# Incluye: traducción, meteo, DB Postgres, y guardarraíl para no repetir (incluso con FORCE_SEND=1).
+# Traducción, meteo, DB Postgres y guardarraíl anti-duplicados (incluso con FORCE_SEND=1).
+# Incluye PING manual controlado por PING_ON_START=1.
 
 import os
 import asyncio
@@ -13,26 +14,27 @@ from timezonefinder import TimezoneFinder
 import pytz
 
 from consejos_diarios import consejos
-from consejos_nutri import CONSEJOS_NUTRI  # ← diccionario en archivo aparte
+from consejos_nutri import CONSEJOS_NUTRI  # ← archivo separado
 from usuarios_repo import (
     init_db, list_users, should_send_now, mark_sent_today, migrate_fill_defaults
 )
 
-# === Módulo solar/meteo de tu repo ===
+# === Módulo solar/meteo del repo ===
 from ubicacion_y_sol import (
     obtener_ubicacion,             # fallback si falta info
-    calcular_intervalos_optimos,   # devuelve ventanas 30–40°
+    calcular_intervalos_optimos,   # ventanas 30–40°
     obtener_pronostico_diario,     # Open-Meteo (o similar)
-    formatear_intervalos_meteo,    # salida “bonita” (opcional, ver flag SHOW_FORMATO_METEO)
+    formatear_intervalos_meteo,    # meteo “bonita” (opcional)
 )
 
-# ---------- Flags de comportamiento (fáciles de quitar) ----------
-SHOW_FORMATO_METEO = True   # ← Pon False si no quieres la línea extra de meteo formateada
+# ---------- Flags fáciles de ajustar ----------
+SHOW_FORMATO_METEO = True  # pon False si no quieres la línea extra de meteo formateada
 
 # ---------- Variables de entorno ----------
-BOT_TOKEN    = os.getenv("BOT_TOKEN")
-FORCE_SEND   = os.getenv("FORCE_SEND", "0") == "1"   # si está en 1, fuerza envío (una vez al día gracias al guardarraíl)
-ONLY_CHAT_ID = os.getenv("ONLY_CHAT_ID")             # si lo pones, solo envía a ese chat
+BOT_TOKEN     = os.getenv("BOT_TOKEN")
+FORCE_SEND    = os.getenv("FORCE_SEND", "0") == "1"   # fuerza envío (una vez al día gracias al guardarraíl)
+ONLY_CHAT_ID  = os.getenv("ONLY_CHAT_ID")             # limita a un chat concreto (tests)
+PING_ON_START = os.getenv("PING_ON_START", "0") == "1" # ping manual al arrancar (siempre y solo si tú lo activas)
 
 # ---------- Traducción ----------
 def _norm_lang(code: Optional[str]) -> str:
@@ -68,9 +70,9 @@ def geocodificar_ciudad(ciudad: str):
         print(f"⚠️ Geocodificación fallida ({ciudad}): {e}")
         return None
 
-# ---------- Compatibilidad firmas (por si tu módulo cambia el orden de parámetros) ----------
+# ---------- Compatibilidad firmas (por si tu módulo cambia) ----------
 def _calc_tramos_compat(fecha_loc, lat, lon, tzname):
-    try:
+    try:  # kwargs
         return calcular_intervalos_optimos(fecha=fecha_loc, lat=lat, lon=lon, tz=tzname)
     except TypeError:
         pass
@@ -100,7 +102,7 @@ def _pronostico_compat(lat, lon, fecha_loc, tzname):
     print("[WARN] obtener_pronostico_diario: no se identificó firma. Devolviendo None.")
     return None
 
-# ---------- Estación del año (considera hemisferio por latitud) ----------
+# ---------- Estación del año (considera hemisferio) ----------
 def estacion_del_anio(fecha: datetime.date, lat: Optional[float]) -> str:
     Y = fecha.year
     prim_i, ver_i, oto_i, inv_i = (datetime.date(Y,3,20), datetime.date(Y,6,21),
@@ -111,7 +113,7 @@ def estacion_del_anio(fecha: datetime.date, lat: Optional[float]) -> str:
         if ver_i  <= fecha < oto_i:  return "Verano"
         if oto_i  <= fecha < inv_i:  return "Otoño"
         return "Invierno"
-    else:
+    else:  # Sur: invertidas
         if prim_i <= fecha < ver_i:  return "Otoño"
         if ver_i  <= fecha < oto_i:  return "Invierno"
         if oto_i  <= fecha < inv_i:  return "Primavera"
@@ -146,7 +148,6 @@ def _tramos_a_texto(tramo_m, tramo_t) -> str:
 
 def _meteo_impide_sintesis(pron: Any, tramo_m, tramo_t) -> bool:
     if not pron:
-        # si no sabemos, no bloqueamos por meteo (pero si no hay tramos, Plan B)
         return (not _normalize_tramos(tramo_m) and not _normalize_tramos(tramo_t))
     try:
         cc = None
@@ -162,7 +163,7 @@ def _meteo_impide_sintesis(pron: Any, tramo_m, tramo_t) -> bool:
         if isinstance(pr, (int,float)) and pr > 0.1:
             return True
         wc = pron.get("weathercode") if isinstance(pron, dict) else None
-        if isinstance(wc, int) and wc >= 51:  # llovizna/lluvia/chubascos
+        if isinstance(wc, int) and wc >= 51:
             return True
         cond = pron.get("condition") if isinstance(pron, dict) else None
         if isinstance(cond, str) and cond.lower() in ("overcast","cloudy","rain","storm","tormenta","lluvia","muy nuboso"):
@@ -228,14 +229,13 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetim
         )
     else:
         texto_tramos = _tramos_a_texto(tramo_m, tramo_t)
-        # (opcional y fácil de quitar) añade debajo la línea de meteo formateada de tu módulo:
+        # (opcional) añade meteo “bonita” de tu módulo:
         if SHOW_FORMATO_METEO:
             try:
                 extra = formatear_intervalos_meteo(tramo_m, tramo_t, ciudad, pron)
                 if extra and isinstance(extra, str):
                     texto_tramos += f"\n({extra})"
             except TypeError:
-                # versiones con menos argumentos
                 try:
                     extra = formatear_intervalos_meteo(tramo_m, tramo_t, ciudad)
                     if extra and isinstance(extra, str):
@@ -247,7 +247,7 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetim
     lang = prefs.get("lang", "es")
     cuerpo = f"{consejo_es}\n\n{referencia_es}\n\n{texto_tramos}"
     cuerpo = traducir(cuerpo, lang)
-    if len(cuerpo) > 4000:  # límite Telegram
+    if len(cuerpo) > 4000:
         cuerpo = cuerpo[:3990] + "…"
 
     # Enviar y marcar
@@ -271,10 +271,10 @@ async def main():
 
     bot = Bot(token=BOT_TOKEN)
 
-    # PING opcional si estás probando
-    if FORCE_SEND and ONLY_CHAT_ID:
+    # Ping manual: solo si PING_ON_START=1 y hay ONLY_CHAT_ID
+    if PING_ON_START and ONLY_CHAT_ID:
         try:
-            await bot.send_message(chat_id=ONLY_CHAT_ID, text="✅ Ping de diagnóstico (FORCE_SEND activo).")
+            await bot.send_message(chat_id=ONLY_CHAT_ID, text="✅ Ping de diagnóstico (PING_ON_START).")
             print(f"[DBG] PING OK to {ONLY_CHAT_ID}")
         except Exception as e:
             print(f"[ERR] PING FAILED to {ONLY_CHAT_ID}: {e}")
@@ -285,7 +285,7 @@ async def main():
         return
 
     now_utc = datetime.datetime.now(datetime.timezone.utc)
-    print(f"[DBG] ONLY_CHAT_ID={ONLY_CHAT_ID} FORCE_SEND={FORCE_SEND}")
+    print(f"[DBG] ONLY_CHAT_ID={ONLY_CHAT_ID} FORCE_SEND={FORCE_SEND} PING_ON_START={PING_ON_START}")
 
     procesados = 0
     for uid, prefs in users.items():
