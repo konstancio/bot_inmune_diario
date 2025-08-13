@@ -30,7 +30,7 @@ from ubicacion_y_sol import (
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ONLY_CHAT_ID = os.getenv("ONLY_CHAT_ID")
-FORCE_SEND = os.getenv(FORCE_SEND") == "1"
+FORCE_SEND   = os.getenv("FORCE_SEND", "0") == "1"
 
 # ---------- Traducción ----------
 
