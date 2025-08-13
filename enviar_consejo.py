@@ -283,12 +283,21 @@ async def main():
     except Exception as e:
         print(f"[WARN] migrate_fill_defaults: {e}")
 
+    bot = Bot(token=BOT_TOKEN)
+
+    # --- PING de diagnóstico opcional (todo dentro de main, para poder usar await) ---
+    if FORCE_SEND and ONLY_CHAT_ID:
+        try:
+            await bot.send_message(chat_id=ONLY_CHAT_ID, text="✅ Ping de diagnóstico (FORCE_SEND activo).")
+            print(f"[DBG] PING OK to {ONLY_CHAT_ID}")
+        except Exception as e:
+            print(f"[ERR] PING FAILED to {ONLY_CHAT_ID}: {e}")
+
     users = list_users()
     if not users:
         print("ℹ️ No hay suscriptores aún.")
         return
 
-    bot = Bot(token=BOT_TOKEN)
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     intentos = 0
 
