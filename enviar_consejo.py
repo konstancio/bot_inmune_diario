@@ -1,6 +1,6 @@
 # enviar_consejo.py — cron cada 5': 09:00 locales, ventanas 30–40° (mañana/tarde)
-# Meteo formateada, Plan B nutricional por estación, traducción multi-idioma,
-# anti-duplicados (incluso con FORCE_SEND=1) y ping manual con PING_ON_START.
+# Meteo formateada, Plan B nutricional por estación (desde consejos_nutri.py),
+# traducción multi-idioma, anti-duplicados y ping manual.
 
 import os
 import asyncio
@@ -14,27 +14,27 @@ from timezonefinder import TimezoneFinder
 import pytz
 
 from consejos_diarios import consejos
-from consejos_nutri import CONSEJOS_NUTRI
+from consejos_nutri import CONSEJOS_NUTRI  # ← archivo separado (ya lo tienes)
 from usuarios_repo import (
     init_db, list_users, should_send_now, mark_sent_today, migrate_fill_defaults
 )
 
-# === Módulo solar/meteo de tu repo ===
+# === Módulo solar/meteo del repo ===
 from ubicacion_y_sol import (
     obtener_ubicacion,             # fallback si falta info
     calcular_intervalos_optimos,   # ventanas 30–40° (mañana/tarde)
-    obtener_pronostico_diario,     # pronóstico diario (Open-Meteo u otro)
-    formatear_intervalos_meteo,    # meteo “bonita” (opcional)
+    obtener_pronostico_diario,     # pronóstico diario
+    formatear_intervalos_meteo,    # meteo “bonita”
 )
 
-# ---------- Flags fáciles de ajustar ----------
-SHOW_FORMATO_METEO = True  # deja la línea extra de meteo formateada
+# ---------- Flags ----------
+SHOW_FORMATO_METEO = True  # dejar línea extra de meteo formateada
 
 # ---------- Variables de entorno ----------
 BOT_TOKEN     = os.getenv("BOT_TOKEN")
-FORCE_SEND    = os.getenv("FORCE_SEND", "0") == "1"     # fuerza envío (una vez/día gracias al guardarraíl)
+FORCE_SEND    = os.getenv("FORCE_SEND", "0") == "1"     # fuerza envío (guardarraíl 1/día)
 ONLY_CHAT_ID  = os.getenv("ONLY_CHAT_ID")               # limita a un chat (tests)
-PING_ON_START = os.getenv("PING_ON_START", "0") == "1"  # ping manual al arrancar (si lo activas)
+PING_ON_START = os.getenv("PING_ON_START", "0") == "1"  # ping manual al arrancar
 
 # ---------- Traducción / idiomas ----------
 def _norm_lang(code: Optional[str]) -> str:
@@ -42,9 +42,7 @@ def _norm_lang(code: Optional[str]) -> str:
         return "es"
     code = code.strip().lower().split("-")[0]
     alias = {
-        # serbio como proxy para croata/bosnio y códigos antiguos
-        "sh": "sr", "sc": "sr", "srp": "sr", "hr": "sr", "bs": "sr",
-        # variantes comunes
+        "sh": "sr", "sc": "sr", "srp": "sr", "hr": "sr", "bs": "sr",  # serbio proxy
         "pt-br": "pt",
     }
     return alias.get(code, code)
@@ -59,7 +57,7 @@ def traducir(texto: str, lang: Optional[str]) -> str:
         print(f"⚠️ Traducción fallida ({dest}): {e}")
         return texto
 
-# ---------- Geocodificación por ciudad ----------
+# ---------- Geocodificación ----------
 _geolocator = Nominatim(user_agent="bot_inmune_diario_multi")
 _tf = TimezoneFinder()
 
@@ -75,9 +73,9 @@ def geocodificar_ciudad(ciudad: str):
         print(f"⚠️ Geocodificación fallida ({ciudad}): {e}")
         return None
 
-# ---------- Compatibilidad firmas (por si tu módulo cambia) ----------
+# ---------- Compatibilidad firmas (por si cambian en tu módulo) ----------
 def _calc_tramos_compat(fecha_loc, lat, lon, tzname):
-    try:  # kwargs
+    try:
         return calcular_intervalos_optimos(fecha=fecha_loc, lat=lat, lon=lon, tz=tzname)
     except TypeError:
         pass
@@ -107,7 +105,7 @@ def _pronostico_compat(lat, lon, fecha_loc, tzname):
     print("[WARN] obtener_pronostico_diario: no se identificó firma. Devolviendo None.")
     return None
 
-# ---------- Estación del año (considera hemisferio por latitud) ----------
+# ---------- Estación del año (considera hemisferio) ----------
 def estacion_del_anio(fecha: datetime.date, lat: Optional[float]) -> str:
     Y = fecha.year
     prim_i, ver_i, oto_i, inv_i = (datetime.date(Y,3,20), datetime.date(Y,6,21),
@@ -118,7 +116,7 @@ def estacion_del_anio(fecha: datetime.date, lat: Optional[float]) -> str:
         if ver_i  <= fecha < oto_i:  return "Verano"
         if oto_i  <= fecha < inv_i:  return "Otoño"
         return "Invierno"
-    else:  # Sur: invertidas
+    else:
         if prim_i <= fecha < ver_i:  return "Otoño"
         if ver_i  <= fecha < oto_i:  return "Invierno"
         if oto_i  <= fecha < inv_i:  return "Primavera"
@@ -181,6 +179,17 @@ def _meteo_impide_sintesis(pron: Any, tramo_m, tramo_t) -> bool:
         return True
     return False
 
+def _texto_consejo_estacion(estacion: str) -> str:
+    """Acepta que CONSEJOS_NUTRI[estacion] sea str, list/tuple de str o similar."""
+    data = CONSEJOS_NUTRI.get(estacion)
+    if data is None:
+        return "Mantén una dieta equilibrada con alimentos ricos en vitamina D y omega-3."
+    if isinstance(data, str):
+        return data.strip()
+    if isinstance(data, (list, tuple)):
+        return " ".join([str(x).strip() for x in data if x]).strip()
+    return str(data)
+
 # ---------- Envío a un usuario ----------
 async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime):
     # Respetar ventana salvo FORCE_SEND
@@ -198,7 +207,7 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetim
         print(f"[DBG] skip {chat_id}: ya enviado hoy")
         return
 
-    # Ubicación priorizando GPS > city > fallback
+    # Ubicación: GPS > city > fallback
     lat = prefs.get("lat"); lon = prefs.get("lon")
     tzname = prefs.get("tz"); ciudad = prefs.get("city") or "tu zona"
     if lat is None or lon is None or not tzname:
@@ -228,13 +237,13 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetim
     # Bloque de tramos o Plan B por estación
     if _meteo_impide_sintesis(pron, tramo_m, tramo_t):
         est = estacion_del_anio(hoy_local, lat)
+        consejo_est = _texto_consejo_estacion(est)
         bloque_tramos = (
             "⛅ Hoy no se esperan ventanas útiles de sol para sintetizar vitamina D.\n"
-            f"🍽️ Consejo de temporada ({est}): {CONSEJOS_NUTRI[est]}"
+            f"🍽️ Consejo de temporada ({est}): {consejo_est}"
         )
     else:
         bloque_tramos = _tramos_a_texto_detallado(ciudad, tramo_m, tramo_t)
-        # (opcional) añade meteo “bonita” de tu módulo debajo
         if SHOW_FORMATO_METEO:
             try:
                 extra = formatear_intervalos_meteo(tramo_m, tramo_t, ciudad, pron)
