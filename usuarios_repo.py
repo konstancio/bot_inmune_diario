@@ -16,85 +16,36 @@ VALID_LANG = {"es", "en", "fr", "it", "de", "pt", "nl", "sr", "ru"}
 
 # alias de entrada -> código canónico
 _LANG_ALIAS = {
-    # serbio como proxy para croata/bosnio (+ códigos antiguos)
-    "sh": "sr", "sc": "sr", "srp": "sr", "hr": "sr", "bs": "sr",
-    # variantes comunes
-    "pt-br": "pt",
+    "sh": "sr", "sc": "sr", "srp": "sr", "hr": "sr", "bs": "sr",  # serbio como proxy
+    "pt-br": "pt"
 }
 
-# ------------------ conexión ------------------
-
 def _get_conn():
-    url = os.getenv("DATABASE_DSN") or os.getenv("DATABASE_URL")
+    url = os.getenv("DATABASE_DSN")
     if not url:
-        raise RuntimeError("DATABASE_DSN (o DATABASE_URL) no está definida")
-    # habilitamos autocommit para DDL sencillo
+        raise RuntimeError("DATABASE_DSN no está definida")
     conn = psycopg2.connect(url, sslmode="require")
     conn.autocommit = True
     return conn
 
 def init_db() -> None:
-    """Crea tablas si no existen (idempotente). Llamar al arrancar."""
     sql = """
     CREATE TABLE IF NOT EXISTS subscribers (
-        chat_id         TEXT PRIMARY KEY,
-        lang            TEXT NOT NULL DEFAULT 'es',
-        city            TEXT,
-        lat             DOUBLE PRECISION,
-        lon             DOUBLE PRECISION,
-        tz              TEXT NOT NULL DEFAULT 'Europe/Madrid',
-        last_sent_iso   TEXT,
+        chat_id        TEXT PRIMARY KEY,
+        lang           TEXT NOT NULL DEFAULT 'es',
+        city           TEXT,
+        lat            DOUBLE PRECISION,
+        lon            DOUBLE PRECISION,
+        tz             TEXT NOT NULL DEFAULT 'Europe/Madrid',
+        last_sent_iso  TEXT,
         send_hour_local INTEGER NOT NULL DEFAULT 9,
-        created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_subs_tz ON subscribers (tz);
     """
     with _get_conn() as conn, conn.cursor() as cur:
         cur.execute(sql)
-
-def migrate_fill_defaults() -> None:
-    """
-    Migración suave y segura:
-    - Garantiza que filas existentes tengan defaults sensatos.
-    - No realiza ALTER TABLE (Railway ya crea la tabla con init_db()).
-    """
-    with _get_conn() as conn, conn.cursor() as cur:
-        # lang canónico por defecto
-        cur.execute("""
-            UPDATE subscribers
-               SET lang='es'
-             WHERE (lang IS NULL OR lang='')
-        """)
-        # tz por defecto
-        cur.execute("""
-            UPDATE subscribers
-               SET tz='Europe/Madrid'
-             WHERE (tz IS NULL OR tz='')
-        """)
-        # send_hour_local por defecto
-        cur.execute("""
-            UPDATE subscribers
-               SET send_hour_local=9
-             WHERE send_hour_local IS NULL
-        """)
-        # updated_at
-        cur.execute("""
-            UPDATE subscribers
-               SET updated_at=now()
-             WHERE updated_at IS NULL
-        """)
-
-def _row_to_dict(row) -> dict:
-    if not row:
-        return {}
-    if isinstance(row, dict):
-        return dict(row)
-    if hasattr(row, "keys"):
-        return dict(row)
-    return dict(row)
-
-# ------------------ CRUD básico ------------------
 
 def ensure_user(chat_id: str) -> dict:
     with _get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -102,10 +53,7 @@ def ensure_user(chat_id: str) -> dict:
         row = cur.fetchone()
         if row:
             return dict(row)
-        cur.execute("""
-            INSERT INTO subscribers (chat_id) VALUES (%s)
-            ON CONFLICT (chat_id) DO NOTHING
-        """, (str(chat_id),))
+        cur.execute("INSERT INTO subscribers (chat_id) VALUES (%s) ON CONFLICT (chat_id) DO NOTHING", (str(chat_id),))
         cur.execute("SELECT * FROM subscribers WHERE chat_id=%s", (str(chat_id),))
         return dict(cur.fetchone())
 
@@ -122,29 +70,18 @@ def unsubscribe(chat_id: str) -> None:
     with _get_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM subscribers WHERE chat_id=%s", (str(chat_id),))
 
-# ------------------ Preferencias ------------------
-
 def set_lang(chat_id: str, lang: str) -> bool:
-    """
-    Guarda el idioma canónico del usuario. Acepta alias:
-    - hr/bs/sh/sc/srp -> sr (serbio proxy para croata/bosnio)
-    - pt-br -> pt
-    """
     lang = (lang or "").strip().lower()
-    lang = _LANG_ALIAS.get(lang, lang)
+    lang = _LANG_ALIAS.get(lang, lang)  # normalizamos alias
     if lang not in VALID_LANG:
         return False
     with _get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""
-            UPDATE subscribers SET lang=%s, updated_at=now() WHERE chat_id=%s
-        """, (lang, str(chat_id)))
+        cur.execute("UPDATE subscribers SET lang=%s, updated_at=now() WHERE chat_id=%s", (lang, str(chat_id)))
     return True
 
 def set_city(chat_id: str, city: Optional[str]) -> None:
     with _get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""
-            UPDATE subscribers SET city=%s, updated_at=now() WHERE chat_id=%s
-        """, (city, str(chat_id)))
+        cur.execute("UPDATE subscribers SET city=%s, updated_at=now() WHERE chat_id=%s", (city, str(chat_id)))
 
 def set_location(chat_id: str, lat: float, lon: float, tz: str, city_hint: Optional[str] = None) -> None:
     with _get_conn() as conn, conn.cursor() as cur:
@@ -161,44 +98,27 @@ def set_send_hour(chat_id: str, hour_local: int) -> None:
         hour_local = 9
     hour_local = max(0, min(23, hour_local))
     with _get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""
-            UPDATE subscribers SET send_hour_local=%s, updated_at=now() WHERE chat_id=%s
-        """, (hour_local, str(chat_id)))
-
-# ------------------ Control de envío diario ------------------
+        cur.execute("UPDATE subscribers SET send_hour_local=%s, updated_at=now() WHERE chat_id=%s", (hour_local, str(chat_id)))
 
 def mark_sent_today(chat_id: str, local_date: date) -> None:
     with _get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""
-            UPDATE subscribers SET last_sent_iso=%s, updated_at=now() WHERE chat_id=%s
-        """, (local_date.isoformat(), str(chat_id)))
+        cur.execute("UPDATE subscribers SET last_sent_iso=%s, updated_at=now() WHERE chat_id=%s", (local_date.isoformat(), str(chat_id)))
 
 def should_send_now(chat: dict, now_utc: Optional[datetime] = None) -> bool:
-    """
-    Para el cron cada 5 min:
-      - Convierte now_utc a hora local del usuario (chat["tz"])
-      - Envía si: local_hour == send_hour_local y 0<=min<10 (ventana 10 min)
-      - Y si aún no se envió hoy (comparando fecha local con last_sent_iso)
-    """
     tzname = (chat.get("tz") or "Europe/Madrid").strip()
     send_hour = int(chat.get("send_hour_local", 9))
-
     if now_utc is None:
         now_utc = datetime.now(timezone.utc)
     try:
         tz = pytz.timezone(tzname)
     except Exception:
         tz = pytz.timezone("Europe/Madrid")
-        tzname = "Europe/Madrid"
-
     now_local = now_utc.astimezone(tz)
     local_date = now_local.date()
     last_sent_iso = chat.get("last_sent_iso")
     already_sent_today = (last_sent_iso == local_date.isoformat())
     in_window = (now_local.hour == send_hour and 0 <= now_local.minute < 10)
     return in_window and not already_sent_today
-
-# --------- Utilidad: obtener “tu” usuario (por chat_id) ---------
 
 def get_user(chat_id: str) -> dict:
     with _get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
