@@ -1,6 +1,6 @@
-# enviar_consejo.py — cron cada 5': 09:00 locales, ventanas 30–40° (mañana/tarde) + Plan B nutricional por estación
-# Traducción, meteo, DB Postgres y guardarraíl anti-duplicados (incluso con FORCE_SEND=1).
-# Incluye PING manual controlado por PING_ON_START=1.
+# enviar_consejo.py — cron cada 5': 09:00 locales, ventanas 30–40° (mañana/tarde)
+# Meteo formateada, Plan B nutricional por estación, traducción multi-idioma,
+# anti-duplicados (incluso con FORCE_SEND=1) y ping manual con PING_ON_START.
 
 import os
 import asyncio
@@ -14,34 +14,39 @@ from timezonefinder import TimezoneFinder
 import pytz
 
 from consejos_diarios import consejos
-from consejos_nutri import CONSEJOS_NUTRI  # ← archivo separado
+from consejos_nutri import CONSEJOS_NUTRI
 from usuarios_repo import (
     init_db, list_users, should_send_now, mark_sent_today, migrate_fill_defaults
 )
 
-# === Módulo solar/meteo del repo ===
+# === Módulo solar/meteo de tu repo ===
 from ubicacion_y_sol import (
     obtener_ubicacion,             # fallback si falta info
-    calcular_intervalos_optimos,   # ventanas 30–40°
-    obtener_pronostico_diario,     # Open-Meteo (o similar)
+    calcular_intervalos_optimos,   # ventanas 30–40° (mañana/tarde)
+    obtener_pronostico_diario,     # pronóstico diario (Open-Meteo u otro)
     formatear_intervalos_meteo,    # meteo “bonita” (opcional)
 )
 
 # ---------- Flags fáciles de ajustar ----------
-SHOW_FORMATO_METEO = True  # pon False si no quieres la línea extra de meteo formateada
+SHOW_FORMATO_METEO = True  # deja la línea extra de meteo formateada
 
 # ---------- Variables de entorno ----------
 BOT_TOKEN     = os.getenv("BOT_TOKEN")
-FORCE_SEND    = os.getenv("FORCE_SEND", "0") == "1"   # fuerza envío (una vez al día gracias al guardarraíl)
-ONLY_CHAT_ID  = os.getenv("ONLY_CHAT_ID")             # limita a un chat concreto (tests)
-PING_ON_START = os.getenv("PING_ON_START", "0") == "1" # ping manual al arrancar (siempre y solo si tú lo activas)
+FORCE_SEND    = os.getenv("FORCE_SEND", "0") == "1"     # fuerza envío (una vez/día gracias al guardarraíl)
+ONLY_CHAT_ID  = os.getenv("ONLY_CHAT_ID")               # limita a un chat (tests)
+PING_ON_START = os.getenv("PING_ON_START", "0") == "1"  # ping manual al arrancar (si lo activas)
 
-# ---------- Traducción ----------
+# ---------- Traducción / idiomas ----------
 def _norm_lang(code: Optional[str]) -> str:
     if not code:
         return "es"
-    code = code.strip().lower()
-    alias = {"sh":"sr","sc":"sr","srp":"sr","cro":"hr","ser":"sr","bos":"bs","pt-br":"pt"}
+    code = code.strip().lower().split("-")[0]
+    alias = {
+        # serbio como proxy para croata/bosnio y códigos antiguos
+        "sh": "sr", "sc": "sr", "srp": "sr", "hr": "sr", "bs": "sr",
+        # variantes comunes
+        "pt-br": "pt",
+    }
     return alias.get(code, code)
 
 def traducir(texto: str, lang: Optional[str]) -> str:
@@ -102,7 +107,7 @@ def _pronostico_compat(lat, lon, fecha_loc, tzname):
     print("[WARN] obtener_pronostico_diario: no se identificó firma. Devolviendo None.")
     return None
 
-# ---------- Estación del año (considera hemisferio) ----------
+# ---------- Estación del año (considera hemisferio por latitud) ----------
 def estacion_del_anio(fecha: datetime.date, lat: Optional[float]) -> str:
     Y = fecha.year
     prim_i, ver_i, oto_i, inv_i = (datetime.date(Y,3,20), datetime.date(Y,6,21),
@@ -132,19 +137,21 @@ def _normalize_tramos(tramo) -> List[Tuple[datetime.datetime, datetime.datetime]
         return [t for t in tramo if isinstance(t, tuple) and len(t) == 2]
     return []
 
-def _tramos_a_texto(tramo_m, tramo_t) -> str:
+def _tramos_a_texto_detallado(ciudad: str, tramo_m, tramo_t) -> str:
     m = _normalize_tramos(tramo_m)
     t = _normalize_tramos(tramo_t)
-    partes = []
+    lineas = [f"🌞 Intervalos solares seguros para producir vit. D hoy en {ciudad}:"]
     if m:
-        rangos = ", ".join(f"{_fmt_hhmm(a)}–{_fmt_hhmm(b)}" for a,b in m)
-        partes.append(f"☀️ Mañana: {rangos}")
+        lineas.append("🌇 Mañana:")
+        for a,b in m:
+            lineas.append(f"🕒 {_fmt_hhmm(a)} - {_fmt_hhmm(b)}")
     if t:
-        rangos = ", ".join(f"{_fmt_hhmm(a)}–{_fmt_hhmm(b)}" for a,b in t)
-        partes.append(f"🌇 Tarde: {rangos}")
-    if not partes:
-        return "Hoy no hay ventanas solares seguras (30–40°)."
-    return "\n".join(partes)
+        lineas.append("🌇 Tarde:")
+        for a,b in t:
+            lineas.append(f"🕒 {_fmt_hhmm(a)} - {_fmt_hhmm(b)}")
+    if not m and not t:
+        lineas.append("Hoy no hay ventanas solares seguras (30–40°).")
+    return "\n".join(lineas)
 
 def _meteo_impide_sintesis(pron: Any, tramo_m, tramo_t) -> bool:
     if not pron:
@@ -193,20 +200,18 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetim
 
     # Ubicación priorizando GPS > city > fallback
     lat = prefs.get("lat"); lon = prefs.get("lon")
-    tzname = prefs.get("tz"); ciudad = prefs.get("city")
+    tzname = prefs.get("tz"); ciudad = prefs.get("city") or "tu zona"
     if lat is None or lon is None or not tzname:
-        if ciudad:
-            geo = geocodificar_ciudad(ciudad)
+        if prefs.get("city"):
+            geo = geocodificar_ciudad(prefs["city"])
             if geo:
                 lat, lon, tzname, ciudad = geo["lat"], geo["lon"], geo["tz"], geo["ciudad"]
             else:
-                ub = obtener_ubicacion()
-                lat, lon, tzname, ciudad = float(ub["latitud"]), float(ub["longitud"]), ub["timezone"], ub["ciudad"]
+                ub = obtener_ubicacion(); lat, lon, tzname, ciudad = float(ub["latitud"]), float(ub["longitud"]), ub["timezone"], ub["ciudad"]
         else:
-            ub = obtener_ubicacion()
-            lat, lon, tzname, ciudad = float(ub["latitud"]), float(ub["longitud"]), ub["timezone"], ub["ciudad"]
+            ub = obtener_ubicacion(); lat, lon, tzname, ciudad = float(ub["latitud"]), float(ub["longitud"]), ub["timezone"], ub["ciudad"]
 
-    # Consejo + referencia del día
+    # Consejo + referencia del día (rotación estable)
     dia_semana = now_local.weekday()
     lista_dia = consejos[dia_semana]
     pares = [lista_dia[i:i+2] for i in range(0, len(lista_dia), 2)]
@@ -220,32 +225,30 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetim
     pron = _pronostico_compat(lat, lon, hoy_local, tzname)
     print(f"[DBG] {chat_id} tz={tzname} tramos_m={tramo_m} tramos_t={tramo_t} pron={pron}")
 
-    # Texto de tramos o Plan B por estación
+    # Bloque de tramos o Plan B por estación
     if _meteo_impide_sintesis(pron, tramo_m, tramo_t):
         est = estacion_del_anio(hoy_local, lat)
-        texto_tramos = (
+        bloque_tramos = (
             "⛅ Hoy no se esperan ventanas útiles de sol para sintetizar vitamina D.\n"
             f"🍽️ Consejo de temporada ({est}): {CONSEJOS_NUTRI[est]}"
         )
     else:
-        texto_tramos = _tramos_a_texto(tramo_m, tramo_t)
-        # (opcional) añade meteo “bonita” de tu módulo:
+        bloque_tramos = _tramos_a_texto_detallado(ciudad, tramo_m, tramo_t)
+        # (opcional) añade meteo “bonita” de tu módulo debajo
         if SHOW_FORMATO_METEO:
             try:
                 extra = formatear_intervalos_meteo(tramo_m, tramo_t, ciudad, pron)
-                if extra and isinstance(extra, str):
-                    texto_tramos += f"\n({extra})"
             except TypeError:
                 try:
                     extra = formatear_intervalos_meteo(tramo_m, tramo_t, ciudad)
-                    if extra and isinstance(extra, str):
-                        texto_tramos += f"\n({extra})"
                 except Exception:
-                    pass
+                    extra = None
+            if extra and isinstance(extra, str):
+                bloque_tramos += f"\n({extra})"
 
     # Mensaje final + traducción
     lang = prefs.get("lang", "es")
-    cuerpo = f"{consejo_es}\n\n{referencia_es}\n\n{texto_tramos}"
+    cuerpo = f"{consejo_es}\n\n{referencia_es}\n\n{bloque_tramos}"
     cuerpo = traducir(cuerpo, lang)
     if len(cuerpo) > 4000:
         cuerpo = cuerpo[:3990] + "…"
