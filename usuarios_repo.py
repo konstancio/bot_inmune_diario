@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 import os
-import json
 import re
 from datetime import datetime, date, timezone
 from typing import Dict, Any, Optional
@@ -12,15 +11,24 @@ import psycopg2
 import psycopg2.extras
 import pytz
 
-VALID_LANG = {"es", "en", "fr", "it", "de", "pt", "nl"}
+# ---- idiomas soportados (canónicos) ----
+VALID_LANG = {"es", "en", "fr", "it", "de", "pt", "nl", "sr", "ru"}
+
+# alias de entrada -> código canónico
+_LANG_ALIAS = {
+    # serbio como proxy para croata/bosnio (+ códigos antiguos)
+    "sh": "sr", "sc": "sr", "srp": "sr", "hr": "sr", "bs": "sr",
+    # variantes comunes
+    "pt-br": "pt",
+}
 
 # ------------------ conexión ------------------
 
 def _get_conn():
-    url = os.getenv("DATABASE_DSN")
+    url = os.getenv("DATABASE_DSN") or os.getenv("DATABASE_URL")
     if not url:
-        raise RuntimeError("DATABASE_DSN no está definida")
-    # habilitamos autocommmit para DDL sencillo
+        raise RuntimeError("DATABASE_DSN (o DATABASE_URL) no está definida")
+    # habilitamos autocommit para DDL sencillo
     conn = psycopg2.connect(url, sslmode="require")
     conn.autocommit = True
     return conn
@@ -29,31 +37,61 @@ def init_db() -> None:
     """Crea tablas si no existen (idempotente). Llamar al arrancar."""
     sql = """
     CREATE TABLE IF NOT EXISTS subscribers (
-        chat_id        TEXT PRIMARY KEY,
-        lang           TEXT NOT NULL DEFAULT 'es',
-        city           TEXT,
-        lat            DOUBLE PRECISION,
-        lon            DOUBLE PRECISION,
-        tz             TEXT NOT NULL DEFAULT 'Europe/Madrid',
-        last_sent_iso  TEXT,
+        chat_id         TEXT PRIMARY KEY,
+        lang            TEXT NOT NULL DEFAULT 'es',
+        city            TEXT,
+        lat             DOUBLE PRECISION,
+        lon             DOUBLE PRECISION,
+        tz              TEXT NOT NULL DEFAULT 'Europe/Madrid',
+        last_sent_iso   TEXT,
         send_hour_local INTEGER NOT NULL DEFAULT 9,
-        created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_subs_tz ON subscribers (tz);
     """
     with _get_conn() as conn, conn.cursor() as cur:
         cur.execute(sql)
 
+def migrate_fill_defaults() -> None:
+    """
+    Migración suave y segura:
+    - Garantiza que filas existentes tengan defaults sensatos.
+    - No realiza ALTER TABLE (Railway ya crea la tabla con init_db()).
+    """
+    with _get_conn() as conn, conn.cursor() as cur:
+        # lang canónico por defecto
+        cur.execute("""
+            UPDATE subscribers
+               SET lang='es'
+             WHERE (lang IS NULL OR lang='')
+        """)
+        # tz por defecto
+        cur.execute("""
+            UPDATE subscribers
+               SET tz='Europe/Madrid'
+             WHERE (tz IS NULL OR tz='')
+        """)
+        # send_hour_local por defecto
+        cur.execute("""
+            UPDATE subscribers
+               SET send_hour_local=9
+             WHERE send_hour_local IS NULL
+        """)
+        # updated_at
+        cur.execute("""
+            UPDATE subscribers
+               SET updated_at=now()
+             WHERE updated_at IS NULL
+        """)
+
 def _row_to_dict(row) -> dict:
     if not row:
         return {}
-    keys = [desc.name for desc in row.cursor_description] if hasattr(row, "cursor_description") else None
     if isinstance(row, dict):
         return dict(row)
     if hasattr(row, "keys"):
         return dict(row)
-    # psycopg2 cursor default -> tuple; usamos extras para dict. Por si acaso:
     return dict(row)
 
 # ------------------ CRUD básico ------------------
@@ -87,8 +125,14 @@ def unsubscribe(chat_id: str) -> None:
 # ------------------ Preferencias ------------------
 
 def set_lang(chat_id: str, lang: str) -> bool:
-    lang = (lang or "").lower().strip()
-    if not re.fullmatch(r"[a-z]{2}", lang):
+    """
+    Guarda el idioma canónico del usuario. Acepta alias:
+    - hr/bs/sh/sc/srp -> sr (serbio proxy para croata/bosnio)
+    - pt-br -> pt
+    """
+    lang = (lang or "").strip().lower()
+    lang = _LANG_ALIAS.get(lang, lang)
+    if lang not in VALID_LANG:
         return False
     with _get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
@@ -161,21 +205,3 @@ def get_user(chat_id: str) -> dict:
         cur.execute("SELECT * FROM subscribers WHERE chat_id=%s", (str(chat_id),))
         row = cur.fetchone()
         return dict(row) if row else {}
-
-def migrate_fill_defaults() -> None:
-    """
-    Migración idempotente para asegurar columnas esperadas en 'subscribers'.
-    No falla si ya existen.
-    """
-    with _get_conn() as conn, conn.cursor() as cur:
-        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS lang TEXT NOT NULL DEFAULT 'es';")
-        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS city TEXT;")
-        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION;")
-        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS lon DOUBLE PRECISION;")
-        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS tz TEXT NOT NULL DEFAULT 'Europe/Madrid';")
-        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS last_sent_iso TEXT;")
-        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS send_hour_local INTEGER NOT NULL DEFAULT 9;")
-        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();")
-        cur.execute("ALTER TABLE IF EXISTS subscribers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();")
-        # Índice útil si no existe
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_subs_tz ON subscribers (tz);")
