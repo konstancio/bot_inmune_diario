@@ -46,7 +46,43 @@ def init_db() -> None:
     """
     with _get_conn() as conn, conn.cursor() as cur:
         cur.execute(sql)
-
+        
+def migrate_fill_defaults() -> None:
+    """
+    Migración suave:
+    - Rellena valores por defecto en filas existentes.
+    - No altera el esquema (Railway ya crea la tabla con init_db()).
+    - Si algo falla, solo registra un aviso.
+    """
+    try:
+        with _get_conn() as conn, conn.cursor() as cur:
+            # lang por defecto
+            cur.execute("""
+                UPDATE subscribers
+                   SET lang='es'
+                 WHERE lang IS NULL OR lang=''
+            """)
+            # tz por defecto
+            cur.execute("""
+                UPDATE subscribers
+                   SET tz='Europe/Madrid'
+                 WHERE tz IS NULL OR tz=''
+            """)
+            # hora por defecto
+            cur.execute("""
+                UPDATE subscribers
+                   SET send_hour_local=9
+                 WHERE send_hour_local IS NULL
+            """)
+            # updated_at por si acaso
+            cur.execute("""
+                UPDATE subscribers
+                   SET updated_at=now()
+                 WHERE updated_at IS NULL
+            """)
+    except Exception as e:
+        print(f"[WARN] migrate_fill_defaults: {e}")
+        
 def ensure_user(chat_id: str) -> dict:
     with _get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("SELECT * FROM subscribers WHERE chat_id=%s", (str(chat_id),))
