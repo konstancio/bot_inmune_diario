@@ -1,6 +1,7 @@
-# enviar_consejo.py — cron cada 5': 09:00 locales, ventanas 30–40° (mañana/tarde)
-# Meteo formateada, Plan B nutricional por estación (desde consejos_nutri.py),
-# traducción multi-idioma, anti-duplicados y ping manual.
+# enviar_consejo.py — dos envíos diarios por usuario:
+#   • Mañana (por defecto 09:00): vitamina D (30–40°) + meteo / plan B nutricional
+#   • Noche  (por defecto 21:00): consejo parasimpático para dormir
+# Traducción multi-idioma, anti-duplicados, y ping manual.
 
 import os
 import asyncio
@@ -14,37 +15,39 @@ from timezonefinder import TimezoneFinder
 import pytz
 
 from consejos_diarios import consejos
-from consejos_nutri import CONSEJOS_NUTRI  # ← archivo separado (ya lo tienes)
+from consejos_nutri import CONSEJOS_NUTRI
+from consejos_parasimpatico import sugerir_para_noche, formatear_consejo
+
 from usuarios_repo import (
-    init_db, list_users, should_send_now, mark_sent_today, migrate_fill_defaults
+    init_db, list_users,
+    should_send_now, should_send_sleep_now,
+    mark_sent_today, mark_sleep_sent_today,
+    migrate_fill_defaults
 )
 
 # === Módulo solar/meteo del repo ===
 from ubicacion_y_sol import (
-    obtener_ubicacion,             # fallback si falta info
+    obtener_ubicacion,
     calcular_intervalos_optimos,   # ventanas 30–40° (mañana/tarde)
     obtener_pronostico_diario,     # pronóstico diario
     formatear_intervalos_meteo,    # meteo “bonita”
 )
 
 # ---------- Flags ----------
-SHOW_FORMATO_METEO = True  # dejar línea extra de meteo formateada
+SHOW_FORMATO_METEO = True
 
 # ---------- Variables de entorno ----------
 BOT_TOKEN     = os.getenv("BOT_TOKEN")
-FORCE_SEND    = os.getenv("FORCE_SEND", "0") == "1"     # fuerza envío (guardarraíl 1/día)
-ONLY_CHAT_ID  = os.getenv("ONLY_CHAT_ID")               # limita a un chat (tests)
-PING_ON_START = os.getenv("PING_ON_START", "0") == "1"  # ping manual al arrancar
+FORCE_SEND    = os.getenv("FORCE_SEND", "0") == "1"     # fuerza envíos (guardarraíl 1/día por tipo)
+ONLY_CHAT_ID  = os.getenv("ONLY_CHAT_ID")
+PING_ON_START = os.getenv("PING_ON_START", "0") == "1"
 
 # ---------- Traducción / idiomas ----------
 def _norm_lang(code: Optional[str]) -> str:
     if not code:
         return "es"
     code = code.strip().lower().split("-")[0]
-    alias = {
-        "sh": "sr", "sc": "sr", "srp": "sr", "hr": "sr", "bs": "sr",  # serbio proxy
-        "pt-br": "pt",
-    }
+    alias = {"sh":"sr","sc":"sr","srp":"sr","hr":"sr","bs":"sr","pt-br":"pt"}
     return alias.get(code, code)
 
 def traducir(texto: str, lang: Optional[str]) -> str:
@@ -73,7 +76,7 @@ def geocodificar_ciudad(ciudad: str):
         print(f"⚠️ Geocodificación fallida ({ciudad}): {e}")
         return None
 
-# ---------- Compatibilidad firmas (por si cambian en tu módulo) ----------
+# ---------- Compatibilidad firmas (por si cambian) ----------
 def _calc_tramos_compat(fecha_loc, lat, lon, tzname):
     try:
         return calcular_intervalos_optimos(fecha=fecha_loc, lat=lat, lon=lon, tz=tzname)
@@ -105,7 +108,7 @@ def _pronostico_compat(lat, lon, fecha_loc, tzname):
     print("[WARN] obtener_pronostico_diario: no se identificó firma. Devolviendo None.")
     return None
 
-# ---------- Estación del año (considera hemisferio) ----------
+# ---------- Estación del año ----------
 def estacion_del_anio(fecha: datetime.date, lat: Optional[float]) -> str:
     Y = fecha.year
     prim_i, ver_i, oto_i, inv_i = (datetime.date(Y,3,20), datetime.date(Y,6,21),
@@ -180,7 +183,6 @@ def _meteo_impide_sintesis(pron: Any, tramo_m, tramo_t) -> bool:
     return False
 
 def _texto_consejo_estacion(estacion: str) -> str:
-    """Acepta que CONSEJOS_NUTRI[estacion] sea str, list/tuple de str o similar."""
     data = CONSEJOS_NUTRI.get(estacion)
     if data is None:
         return "Mantén una dieta equilibrada con alimentos ricos en vitamina D y omega-3."
@@ -190,13 +192,11 @@ def _texto_consejo_estacion(estacion: str) -> str:
         return " ".join([str(x).strip() for x in data if x]).strip()
     return str(data)
 
-# ---------- Envío a un usuario ----------
-async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime):
-    # Respetar ventana salvo FORCE_SEND
+# ---------- Envío DIURNO (vitamina D) ----------
+async def enviar_diurno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime):
     if not FORCE_SEND and not should_send_now(prefs, now_utc=now_utc):
         return
 
-    # Evitar duplicados incluso forzando (máx 1/día por usuario)
     try:
         tz = pytz.timezone(prefs.get("tz", "Europe/Madrid"))
     except Exception:
@@ -204,10 +204,9 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetim
     now_local = now_utc.astimezone(tz)
     hoy_local = now_local.date()
     if prefs.get("last_sent_iso") == hoy_local.isoformat():
-        print(f"[DBG] skip {chat_id}: ya enviado hoy")
         return
 
-    # Ubicación: GPS > city > fallback
+    # Ubicación
     lat = prefs.get("lat"); lon = prefs.get("lon")
     tzname = prefs.get("tz"); ciudad = prefs.get("city") or "tu zona"
     if lat is None or lon is None or not tzname:
@@ -220,27 +219,23 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetim
         else:
             ub = obtener_ubicacion(); lat, lon, tzname, ciudad = float(ub["latitud"]), float(ub["longitud"]), ub["timezone"], ub["ciudad"]
 
-    # Consejo + referencia del día (rotación estable)
+    # Consejo + referencia del día
     dia_semana = now_local.weekday()
     lista_dia = consejos[dia_semana]
     pares = [lista_dia[i:i+2] for i in range(0, len(lista_dia), 2)]
     if not pares:
-        print("⚠️ 'consejos' vacío para este día.")
         return
     consejo_es, referencia_es = pares[now_local.toordinal() % len(pares)]
 
-    # Ventanas solares + pronóstico
+    # Ventanas + pronóstico
     tramo_m, tramo_t = _calc_tramos_compat(hoy_local, lat, lon, tzname)
     pron = _pronostico_compat(lat, lon, hoy_local, tzname)
-    print(f"[DBG] {chat_id} tz={tzname} tramos_m={tramo_m} tramos_t={tramo_t} pron={pron}")
 
-    # Bloque de tramos o Plan B por estación
     if _meteo_impide_sintesis(pron, tramo_m, tramo_t):
         est = estacion_del_anio(hoy_local, lat)
-        consejo_est = _texto_consejo_estacion(est)
         bloque_tramos = (
             "⛅ Hoy no se esperan ventanas útiles de sol para sintetizar vitamina D.\n"
-            f"🍽️ Consejo de temporada ({est}): {consejo_est}"
+            f"🍽️ Consejo de temporada ({est}): {_texto_consejo_estacion(est)}"
         )
     else:
         bloque_tramos = _tramos_a_texto_detallado(ciudad, tramo_m, tramo_t)
@@ -255,21 +250,40 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetim
             if extra and isinstance(extra, str):
                 bloque_tramos += f"\n({extra})"
 
-    # Mensaje final + traducción
+    # Mensaje + traducción
     lang = prefs.get("lang", "es")
     cuerpo = f"{consejo_es}\n\n{referencia_es}\n\n{bloque_tramos}"
-    cuerpo = traducir(cuerpo, lang)
+    cuerpo = traducir(cuerpo, lang) or cuerpo
     if len(cuerpo) > 4000:
         cuerpo = cuerpo[:3990] + "…"
 
-    # Enviar y marcar
-    try:
-        await bot.send_message(chat_id=chat_id, text=cuerpo)
-        print(f"[DBG] OK sent to {chat_id}")
-    except Exception as e:
-        print(f"[ERR] Telegram send_message {chat_id}: {e}")
-        return
+    await bot.send_message(chat_id=chat_id, text=cuerpo)
     mark_sent_today(chat_id, hoy_local)
+
+# ---------- Envío NOCTURNO (parasimpático 21:00) ----------
+async def enviar_nocturno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime):
+    if not FORCE_SEND and not should_send_sleep_now(prefs, now_utc=now_utc):
+        return
+
+    try:
+        tz = pytz.timezone(prefs.get("tz", "Europe/Madrid"))
+    except Exception:
+        tz = pytz.timezone("Europe/Madrid")
+    now_local = now_utc.astimezone(tz)
+    hoy_local = now_local.date()
+    if prefs.get("last_sleep_sent_iso") == hoy_local.isoformat():
+        return
+
+    # Sugerencia parasimpática para la noche
+    consejo = sugerir_para_noche()
+    texto = formatear_consejo(consejo)
+
+    # Traducción al idioma del usuario
+    lang = prefs.get("lang", "es")
+    mensaje = traducir(texto, lang) or texto
+
+    await bot.send_message(chat_id=chat_id, text=mensaje)
+    mark_sleep_sent_today(chat_id, hoy_local)
 
 # ---------- Main ----------
 async def main():
@@ -283,13 +297,11 @@ async def main():
 
     bot = Bot(token=BOT_TOKEN)
 
-    # Ping manual: solo si PING_ON_START=1 y hay ONLY_CHAT_ID
     if PING_ON_START and ONLY_CHAT_ID:
         try:
             await bot.send_message(chat_id=ONLY_CHAT_ID, text="✅ Ping de diagnóstico (PING_ON_START).")
-            print(f"[DBG] PING OK to {ONLY_CHAT_ID}")
         except Exception as e:
-            print(f"[ERR] PING FAILED to {ONLY_CHAT_ID}: {e}")
+            print(f"[ERR] PING FAILED: {e}")
 
     users = list_users()
     if not users:
@@ -297,19 +309,22 @@ async def main():
         return
 
     now_utc = datetime.datetime.now(datetime.timezone.utc)
-    print(f"[DBG] ONLY_CHAT_ID={ONLY_CHAT_ID} FORCE_SEND={FORCE_SEND} PING_ON_START={PING_ON_START}")
+    intentos_diurnos = 0
+    intentos_nocturnos = 0
 
-    procesados = 0
     for uid, prefs in users.items():
         if ONLY_CHAT_ID and uid != ONLY_CHAT_ID:
             continue
         try:
-            await enviar_a_usuario(bot, uid, prefs, now_utc)
-            procesados += 1
+            await enviar_diurno(bot, uid, prefs, now_utc); intentos_diurnos += 1
         except Exception as e:
-            print(f"❌ Error enviando a {uid}: {e}")
+            print(f"❌ Error diurno {uid}: {e}")
+        try:
+            await enviar_nocturno(bot, uid, prefs, now_utc); intentos_nocturnos += 1
+        except Exception as e:
+            print(f"❌ Error nocturno {uid}: {e}")
 
-    print(f"✅ Ciclo cron OK. Usuarios procesados: {procesados} / {len(users)}")
+    print(f"✅ Ciclo cron OK. Usuarios: {len(users)} | Intentos diurnos: {intentos_diurnos} | Nocturnos: {intentos_nocturnos}")
 
 if __name__ == "__main__":
     asyncio.run(main())
