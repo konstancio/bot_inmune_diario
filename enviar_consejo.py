@@ -1,7 +1,7 @@
 # enviar_consejo.py — dos envíos diarios por usuario:
-#   • Mañana (por defecto 09:00): vitamina D (30–40°) + meteo / plan B nutricional
-#   • Noche  (por defecto 21:00): consejo parasimpático para dormir
-# Traducción multi-idioma, anti-duplicados, y ping manual.
+#  • Mañana (por defecto 09:00): ventanas 30–40° + meteo o consejo nutricional por estación
+#  • Noche  (por defecto 21:00): ejercicio parasimpático para dormir
+# Traducción multi-idioma, anti-duplicados, y flags de diagnóstico.
 
 import os
 import asyncio
@@ -25,24 +25,22 @@ from usuarios_repo import (
     migrate_fill_defaults
 )
 
-# === Módulo solar/meteo del repo ===
+# --- módulo solar/meteo de tu repo ---
 from ubicacion_y_sol import (
     obtener_ubicacion,
-    calcular_intervalos_optimos,   # ventanas 30–40° (mañana/tarde)
-    obtener_pronostico_diario,     # pronóstico diario
-    formatear_intervalos_meteo,    # meteo “bonita”
+    calcular_intervalos_optimos,     # devuelve (tramo_manana, tramo_tarde)
+    obtener_pronostico_diario,       # pronóstico (sin API key)
+    formatear_intervalos_meteo,      # string opcional con emojis/meteo
 )
 
-# ---------- Flags ----------
+# ========== Flags / Entorno ==========
+BOT_TOKEN     = os.getenv("BOT_TOKEN")
+FORCE_SEND    = os.getenv("FORCE_SEND", "0") == "1"     # fuerza envío hoy (1 vez por tipo)
+ONLY_CHAT_ID  = os.getenv("ONLY_CHAT_ID")               # limita a un chat para pruebas
+PING_ON_START = os.getenv("PING_ON_START", "0") == "1"  # ping al iniciar si ONLY_CHAT_ID
 SHOW_FORMATO_METEO = True
 
-# ---------- Variables de entorno ----------
-BOT_TOKEN     = os.getenv("BOT_TOKEN")
-FORCE_SEND    = os.getenv("FORCE_SEND", "0") == "1"     # fuerza envíos (guardarraíl 1/día por tipo)
-ONLY_CHAT_ID  = os.getenv("ONLY_CHAT_ID")
-PING_ON_START = os.getenv("PING_ON_START", "0") == "1"
-
-# ---------- Traducción / idiomas ----------
+# ========== Traducción ==========
 def _norm_lang(code: Optional[str]) -> str:
     if not code:
         return "es"
@@ -60,7 +58,7 @@ def traducir(texto: str, lang: Optional[str]) -> str:
         print(f"⚠️ Traducción fallida ({dest}): {e}")
         return texto
 
-# ---------- Geocodificación ----------
+# ========== Geocodificación ==========
 _geolocator = Nominatim(user_agent="bot_inmune_diario_multi")
 _tf = TimezoneFinder()
 
@@ -76,7 +74,7 @@ def geocodificar_ciudad(ciudad: str):
         print(f"⚠️ Geocodificación fallida ({ciudad}): {e}")
         return None
 
-# ---------- Compatibilidad firmas (por si cambian) ----------
+# ========== Compat firmas (por si cambian) ==========
 def _calc_tramos_compat(fecha_loc, lat, lon, tzname):
     try:
         return calcular_intervalos_optimos(fecha=fecha_loc, lat=lat, lon=lon, tz=tzname)
@@ -92,7 +90,7 @@ def _calc_tramos_compat(fecha_loc, lat, lon, tzname):
             return calcular_intervalos_optimos(*args)
         except Exception:
             continue
-    print("[ERR] calcular_intervalos_optimos: no se identificó firma. Devolviendo None.")
+    print("[ERR] calcular_intervalos_optimos: firma desconocida.")
     return None, None
 
 def _pronostico_compat(lat, lon, fecha_loc, tzname):
@@ -105,10 +103,10 @@ def _pronostico_compat(lat, lon, fecha_loc, tzname):
             return obtener_pronostico_diario(*args)
         except Exception:
             continue
-    print("[WARN] obtener_pronostico_diario: no se identificó firma. Devolviendo None.")
+    print("[WARN] obtener_pronostico_diario: firma desconocida.")
     return None
 
-# ---------- Estación del año ----------
+# ========== Estación del año ==========
 def estacion_del_anio(fecha: datetime.date, lat: Optional[float]) -> str:
     Y = fecha.year
     prim_i, ver_i, oto_i, inv_i = (datetime.date(Y,3,20), datetime.date(Y,6,21),
@@ -125,7 +123,7 @@ def estacion_del_anio(fecha: datetime.date, lat: Optional[float]) -> str:
         if oto_i  <= fecha < inv_i:  return "Primavera"
         return "Verano"
 
-# ---------- Formateo de ventanas y meteo ----------
+# ========== Formateo ==========
 def _fmt_hhmm(dtobj: datetime.datetime) -> str:
     return dtobj.strftime("%H:%M")
 
@@ -192,7 +190,7 @@ def _texto_consejo_estacion(estacion: str) -> str:
         return " ".join([str(x).strip() for x in data if x]).strip()
     return str(data)
 
-# ---------- Envío DIURNO (vitamina D) ----------
+# ========== Envío DIURNO ==========
 async def enviar_diurno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime):
     if not FORCE_SEND and not should_send_now(prefs, now_utc=now_utc):
         return
@@ -260,7 +258,7 @@ async def enviar_diurno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.d
     await bot.send_message(chat_id=chat_id, text=cuerpo)
     mark_sent_today(chat_id, hoy_local)
 
-# ---------- Envío NOCTURNO (parasimpático 21:00) ----------
+# ========== Envío NOCTURNO ==========
 async def enviar_nocturno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime):
     if not FORCE_SEND and not should_send_sleep_now(prefs, now_utc=now_utc):
         return
@@ -274,18 +272,16 @@ async def enviar_nocturno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime
     if prefs.get("last_sleep_sent_iso") == hoy_local.isoformat():
         return
 
-    # Sugerencia parasimpática para la noche
     consejo = sugerir_para_noche()
     texto = formatear_consejo(consejo)
 
-    # Traducción al idioma del usuario
     lang = prefs.get("lang", "es")
     mensaje = traducir(texto, lang) or texto
 
     await bot.send_message(chat_id=chat_id, text=mensaje)
     mark_sleep_sent_today(chat_id, hoy_local)
 
-# ---------- Main ----------
+# ========== Main ==========
 async def main():
     if not BOT_TOKEN:
         raise RuntimeError("❌ Faltan variables de entorno: BOT_TOKEN")
