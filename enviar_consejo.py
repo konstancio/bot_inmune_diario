@@ -1,7 +1,8 @@
-# enviar_consejo.py — dos envíos diarios por usuario:
-#  • Mañana (por defecto 09:00): ventanas 30–40° + meteo o consejo nutricional por estación
-#  • Noche  (por defecto 21:00): ejercicio parasimpático para dormir
-# Traducción multi-idioma, anti-duplicados, y flags de diagnóstico.
+# enviar_consejo.py — dos envíos diarios + publicación en canal
+#  • Mañana (09:00 por defecto): ventanas 30–40° + meteo o consejo nutricional por estación
+#  • Noche  (21:00 por defecto): ejercicio parasimpático para dormir
+# También publica una copia en tu canal (si CANAL_CHAT_ID está definido).
+# Traducción multi-idioma, anti-duplicados y flags de diagnóstico.
 
 import os
 import asyncio
@@ -28,17 +29,20 @@ from usuarios_repo import (
 # --- módulo solar/meteo de tu repo ---
 from ubicacion_y_sol import (
     obtener_ubicacion,
-    calcular_intervalos_optimos,     # devuelve (tramo_manana, tramo_tarde)
+    calcular_intervalos_optimos,     # ventanas 30–40° (mañana/tarde)
     obtener_pronostico_diario,       # pronóstico (sin API key)
     formatear_intervalos_meteo,      # string opcional con emojis/meteo
 )
 
 # ========== Flags / Entorno ==========
-BOT_TOKEN     = os.getenv("BOT_TOKEN")
-FORCE_SEND    = os.getenv("FORCE_SEND", "0") == "1"     # fuerza envío hoy (1 vez por tipo)
-ONLY_CHAT_ID  = os.getenv("ONLY_CHAT_ID")               # limita a un chat para pruebas
-PING_ON_START = os.getenv("PING_ON_START", "0") == "1"  # ping al iniciar si ONLY_CHAT_ID
+BOT_TOKEN       = os.getenv("BOT_TOKEN")
+FORCE_SEND      = os.getenv("FORCE_SEND", "0") == "1"     # fuerza 1 envío por tipo hoy
+ONLY_CHAT_ID    = os.getenv("ONLY_CHAT_ID")               # limita a un chat para pruebas
+PING_ON_START   = os.getenv("PING_ON_START", "0") == "1"  # ping al iniciar si ONLY_CHAT_ID
 SHOW_FORMATO_METEO = True
+
+# Canal (público o privado). Ejemplos: @MiCanal  o  -1001234567890
+CANAL_CHAT_ID   = os.getenv("CANAL_CHAT_ID")  # si está vacío, no publica al canal
 
 # ========== Traducción ==========
 def _norm_lang(code: Optional[str]) -> str:
@@ -191,7 +195,7 @@ def _texto_consejo_estacion(estacion: str) -> str:
     return str(data)
 
 # ========== Envío DIURNO ==========
-async def enviar_diurno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime):
+async def enviar_diurno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime, context_flags: dict):
     if not FORCE_SEND and not should_send_now(prefs, now_utc=now_utc):
         return
 
@@ -255,11 +259,23 @@ async def enviar_diurno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.d
     if len(cuerpo) > 4000:
         cuerpo = cuerpo[:3990] + "…"
 
+    # Enviar al usuario
     await bot.send_message(chat_id=chat_id, text=cuerpo)
     mark_sent_today(chat_id, hoy_local)
 
+    # Publicar UNA VEZ por ciclo en el canal (si está definido)
+    if CANAL_CHAT_ID and not context_flags.get("posted_channel_diurno", False):
+        try:
+            pub = f"🔔 Consejo público:\n{cuerpo}"
+            if len(pub) > 3800:
+                pub = pub[:3790] + "…"
+            await bot.send_message(chat_id=CANAL_CHAT_ID, text=pub)
+            context_flags["posted_channel_diurno"] = True
+        except Exception as e:
+            print(f"[WARN] No pude publicar en canal (diurno): {e}")
+
 # ========== Envío NOCTURNO ==========
-async def enviar_nocturno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime):
+async def enviar_nocturno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime, context_flags: dict):
     if not FORCE_SEND and not should_send_sleep_now(prefs, now_utc=now_utc):
         return
 
@@ -278,8 +294,20 @@ async def enviar_nocturno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime
     lang = prefs.get("lang", "es")
     mensaje = traducir(texto, lang) or texto
 
+    # Enviar al usuario
     await bot.send_message(chat_id=chat_id, text=mensaje)
     mark_sleep_sent_today(chat_id, hoy_local)
+
+    # Publicar UNA VEZ por ciclo en el canal (si está definido)
+    if CANAL_CHAT_ID and not context_flags.get("posted_channel_nocturno", False):
+        try:
+            pub = f"🌙 Consejo para dormir (público):\n{mensaje}"
+            if len(pub) > 3800:
+                pub = pub[:3790] + "…"
+            await bot.send_message(chat_id=CANAL_CHAT_ID, text=pub)
+            context_flags["posted_channel_nocturno"] = True
+        except Exception as e:
+            print(f"[WARN] No pude publicar en canal (nocturno): {e}")
 
 # ========== Main ==========
 async def main():
@@ -308,15 +336,18 @@ async def main():
     intentos_diurnos = 0
     intentos_nocturnos = 0
 
+    # Flags compartidos del ciclo para publicar en canal solo una vez por tipo
+    context_flags = {"posted_channel_diurno": False, "posted_channel_nocturno": False}
+
     for uid, prefs in users.items():
         if ONLY_CHAT_ID and uid != ONLY_CHAT_ID:
             continue
         try:
-            await enviar_diurno(bot, uid, prefs, now_utc); intentos_diurnos += 1
+            await enviar_diurno(bot, uid, prefs, now_utc, context_flags=context_flags); intentos_diurnos += 1
         except Exception as e:
             print(f"❌ Error diurno {uid}: {e}")
         try:
-            await enviar_nocturno(bot, uid, prefs, now_utc); intentos_nocturnos += 1
+            await enviar_nocturno(bot, uid, prefs, now_utc, context_flags=context_flags); intentos_nocturnos += 1
         except Exception as e:
             print(f"❌ Error nocturno {uid}: {e}")
 
