@@ -1,221 +1,156 @@
 # consejos_parasimpatico.py
-# Prácticas breves para activar el sistema parasimpático (anti-estrés).
-# No requiere dependencias. Úsalo desde tu bot para proponer ejercicios guiados.
+# 60 consejos para activar el sistema parasimpático (relajación y sueño).
+# Rotación diaria determinista y traducción automática opcional.
 
 from __future__ import annotations
-from typing import List, Dict, Any, Optional
-import random
+import datetime
+from typing import Optional, List
+try:
+    from deep_translator import LibreTranslator
+except Exception:
+    LibreTranslator = None  # por si no está disponible en algún entorno
 
-# Cada consejo es un dict con:
-# id, nombre, dur_min, momento, contexto, pasos[list[str]], nota_seguridad[str|None], evidencia[str|None]
-CONSEJOS_PARASIMPATICO: List[Dict[str, Any]] = [
+# ------------------ lista de 60 consejos (ES) ------------------
 
-    {
-        "id": "resp_4_6",
-        "nombre": "Respiración 4-6 (coherencia cardíaca)",
-        "dur_min": 3,
-        "momento": "cualquiera",
-        "contexto": "oficina",
-        "pasos": [
-            "Siéntate cómodo, hombros sueltos.",
-            "Inhala por la nariz durante 4 segundos.",
-            "Exhala lenta y completamente por la nariz o la boca durante 6 segundos.",
-            "Repite el ciclo de 4-6 durante 3–5 minutos manteniendo una respiración silenciosa.",
-        ],
-        "nota_seguridad": "Si mareas, reduce el tiempo de exhalación a 5s y respira con suavidad.",
-        "evidencia": "Coherence breathing 6 ciclos/min → ↑variabilidad cardíaca (HRV) y calma autonómica."
-    },
+CONSEJOS_PARASIMPATICO: List[str] = [
+    # Respiración y ritmo
+    "Respiración diafragmática: inhala 4s por la nariz, retén 2s, exhala 6s por la boca durante 5 minutos.",
+    "Técnica 4-7-8: inhala 4s, retén 7s, exhala 8s. Repite 4 ciclos.",
+    "Respiración en caja: 4s inhalar, 4s retener, 4s exhalar, 4s retener. 3–5 minutos.",
+    "Coherencia cardíaca: 6 respiraciones por minuto, 5 minutos (≈ 5s inhalar, 5s exhalar).",
+    "Suspiro fisiológico: doble inhalación nasal (2ª corta) + exhalación larga por la boca. Haz 5 repeticiones.",
+    "Respiración alterna (nadi shodhana): alterna fosas nasales 4–4–6 (inhala-retén-exhala) por 3 minutos.",
+    "Exhalaciones largas: exhala el doble de tiempo que inhalas durante 2–3 minutos.",
+    "Cuenta respiraciones del 1 al 10 (inhalas=1, exhalas=2…). Si te distraes, vuelve al 1 sin juzgar.",
 
-    {
-        "id": "resp_caja",
-        "nombre": "Respiración en caja 4-4-4-4",
-        "dur_min": 2,
-        "momento": "cualquiera",
-        "contexto": "oficina",
-        "pasos": [
-            "Inhala 4 segundos.",
-            "Retén 4 segundos (suave, sin tensión).",
-            "Exhala 4 segundos.",
-            "Retén con pulmones vacíos 4 segundos.",
-            "Repite 2–4 minutos.",
-        ],
-        "nota_seguridad": "Evita retenciones largas si estás embarazada o con problemas respiratorios.",
-        "evidencia": "Técnica de control respiratorio que modula el tono vagal."
-    },
+    # Relajación muscular y cuerpo
+    "Relajación progresiva de Jacobson: tensa y suelta pies, piernas, abdomen, hombros y cara (5s/10s).",
+    "Estiramiento cervical suave: oreja al hombro 15s por lado, respirando lento.",
+    "Auto-masaje de hombros y trapecios con respiración lenta durante 2 minutos.",
+    "Piernas en la pared (Viparita Karani) 3–5 minutos para favorecer el retorno venoso.",
+    "Postura del niño (yoga) 2–3 minutos con respiración nasal lenta.",
+    "Balanceo suave sentado: microbalanceos laterales sincronizados con la respiración 2 minutos.",
+    "Movilidad torácica: manos detrás de la cabeza, abre costillas al inhalar, suelta al exhalar, 10 veces.",
+    "Rodillos o pelota blanda en planta del pie 1–2 minutos por lado para soltar tensión global.",
 
-    {
-        "id": "suspiros_fisiologicos",
-        "nombre": "2 Suspiros fisiológicos + exhalación larga",
-        "dur_min": 1,
-        "momento": "pico_estrés",
-        "contexto": "cualquiera",
-        "pasos": [
-            "Inhala por la nariz hasta ~80% de tus pulmones.",
-            "Haz una mini-inhala breve adicional por la nariz para 'llenar' la parte alta.",
-            "Exhala larga y progresiva por la boca.",
-            "Haz 3–5 repeticiones. Notarás alivio rápido de la tensión.",
-        ],
-        "nota_seguridad": None,
-        "evidencia": "El 'physiological sigh' reduce CO₂ y activa reflejos calmantes."
-    },
+    # Mindfulness / escaneo / atención
+    "Body scan de 3 minutos: recorre el cuerpo de pies a cabeza soltando tensión en cada zona.",
+    "Atención a sonidos: 2 minutos escuchando el ambiente sin etiquetar.",
+    "Visualización calmante: imagina un lugar seguro (playa/bosque) con todo detalle 3–5 minutos.",
+    "Gratitud de 3 cosas: recuerda tres momentos agradables del día y respíralos 30s cada uno.",
+    "Meditación guiada corta (5–10 min) con foco en la respiración.",
+    "Observa 5-4-3-2-1: 5 cosas que ves, 4 que sientes, 3 que oyes, 2 que hueles, 1 que saboreas.",
 
-    {
-        "id": "relaj_muscular",
-        "nombre": "Relajación muscular progresiva (mano-hombros-cara)",
-        "dur_min": 4,
-        "momento": "tarde",
-        "contexto": "oficina",
-        "pasos": [
-            "Aprieta puños 5 segundos y suelta 10; siente la diferencia.",
-            "Eleva hombros 5 segundos y suelta 10.",
-            "Frunce la cara con suavidad 5 segundos y suelta 10.",
-            "Repite el ciclo completo 2 veces.",
-        ],
-        "nota_seguridad": "Evita contracciones dolorosas si tienes lesión.",
-        "evidencia": "PMR (Jacobson) reduce activación simpática y ansiedad somática."
-    },
+    # Higiene del sueño y entorno
+    "Baja las luces y activa modo cálido 60 minutos antes de acostarte.",
+    "Evita pantallas brillantes 30–60 minutos antes de dormir.",
+    "Mantén la habitación fresca (18–20 °C) y oscura.",
+    "Rutina 3-2-1: no cenar fuerte 3h antes, no trabajo 2h antes, no pantallas 1h antes.",
+    "Ducha tibia 10–15 minutos antes de la cama para favorecer la caída de temperatura corporal interna.",
+    "Ventila 5 minutos el dormitorio antes de acostarte.",
+    "Pon el móvil en modo avión o déjalo fuera del dormitorio.",
 
-    {
-        "id": "zumbido_vagal",
-        "nombre": "Zumbido/Hum para el nervio vago",
-        "dur_min": 2,
-        "momento": "cualquiera",
-        "contexto": "casa",
-        "pasos": [
-            "Inhala por la nariz.",
-            "Exhala emitiendo un zumbido suave 'mmmm' o 'om' que vibre en garganta y rostro.",
-            "Manténlo 6–8 s; repite 8–10 veces.",
-        ],
-        "nota_seguridad": "Bajo volumen si estás en la oficina 😉.",
-        "evidencia": "Vibración laríngea y exhalación prolongada → ↑tono vagal."
-    },
+    # Rituales y hábitos suaves
+    "Infusión relajante (manzanilla, tila, pasiflora o lavanda) 30 minutos antes.",
+    "Lee 10–15 minutos un libro tranquilo en papel.",
+    "Diario breve: escribe lo pendiente para ‘sacarlo’ de la cabeza.",
+    "Aromaterapia con 1–2 gotas de lavanda en difusor o almohada.",
+    "Música ambiental suave (volumen bajo) durante 10 minutos.",
+    "Luz de sal o lámpara cálida como único punto de luz nocturno.",
+    "Pijama cómodo y sábanas agradables: señales de seguridad al cuerpo.",
 
-    {
-        "id": "agua_fresca_cara",
-        "nombre": "Reflejo de inmersión: agua fresca en la cara",
-        "dur_min": 1,
-        "momento": "pico_estrés",
-        "contexto": "baño",
-        "pasos": [
-            "Moja cara con agua fresca 10–20°C o aplica compresa fría en mejillas y zona bajo ojos.",
-            "Respira lento por la nariz 1–2 minutos.",
-        ],
-        "nota_seguridad": "Evita frío extremo si tienes problemas cardíacos o migrañas desencadenadas por frío.",
-        "evidencia": "Reflejo trigémino → bradicardia suave y activación parasimpática."
-    },
+    # Nervio vago / estímulos sensoriales
+    "Zumbido ‘mmmm’ en la exhalación (bhramari) 6–8 repeticiones para vibrar senos y garganta.",
+    "Enjuague bucal suave y respiración nasal lenta para relajar mandíbula y lengua.",
+    "Compresa templada en abdomen o nuca 5 minutos.",
+    "Agua fresca en la cara 10–20°C 30–60s para activar reflejo de inmersión.",
+    "Masticación lenta y consciente de un bocado blando (si todavía no cenaste).",
+    "Auto-abrazo cruzado (estimulación propioceptiva) 60–90s con respiración lenta.",
 
-    {
-        "id": "body_scan_2m",
-        "nombre": "Body-scan de 2 minutos",
-        "dur_min": 2,
-        "momento": "noche",
-        "contexto": "cama",
-        "pasos": [
-            "Cierra los ojos y recorre el cuerpo de pies a cabeza.",
-            "En cada zona, inspira 3 s y al exhalar suelta la tensión.",
-            "Si aparecen pensamientos, vuelve amable al cuerpo.",
-        ],
-        "nota_seguridad": None,
-        "evidencia": "Atención interoceptiva reduce rumiación y baja arousal."
-    },
+    # Movimiento suave y luz
+    "Paseo corto al atardecer (10–15 min) para bajar el cortisol.",
+    "Estiramiento gato-camello (espalda) 2–3 minutos al ritmo de la respiración.",
+    "Respiración + balanceo de tobillos sentado en cama 1–2 minutos.",
+    "Saludo al sol extremadamente suave x3 con respiración lenta (si no hay molestias).",
 
-    {
-        "id": "gratitud_3",
-        "nombre": "3 cosas buenas (gratitud breve)",
-        "dur_min": 2,
-        "momento": "noche",
-        "contexto": "cama",
-        "pasos": [
-            "Piensa o escribe 3 cosas que salieron bien hoy y por qué.",
-            "Respira 4-6 mientras evocarlas 30–60 s cada una.",
-        ],
-        "nota_seguridad": None,
-        "evidencia": "Prácticas de gratitud mejoran afecto positivo y sueño."
-    },
+    # Gestión cognitiva/emocional
+    "Planifica mañana en 3 puntos simples; cierra el cuaderno y suelta.",
+    "Reformula preocupaciones como tareas concretas y pequeñas.",
+    "Autocompasión: habla contigo como hablarías con un buen amigo durante 1 minuto.",
+    "Limita noticias/temas activadores por la noche; pospón para mañana.",
+    "Declara un ‘corte de rumiación’ y vuelve a la respiración cuando te sorprendas pensando en bucle.",
 
-    {
-        "id": "estir_gato_camel",
-        "nombre": "Estiramiento suave (gato-camello)",
-        "dur_min": 3,
-        "momento": "mañana",
-        "contexto": "casa",
-        "pasos": [
-            "A cuatro apoyos, arquea espalda (gato) al exhalar.",
-            "Inhala y baja el abdomen (camello).",
-            "Ritmo 5–6 ciclos/min durante 2–3 minutos.",
-        ],
-        "nota_seguridad": "Evita si hay dolor lumbar agudo; mueve con suavidad.",
-        "evidencia": "Movimiento respirado + ritmo lento → ↑tono parasimpático."
-    },
+    # Alimentación/hábitos suaves
+    "Cena ligera rica en triptófano (pavo, huevo, yogur) y carbohidrato complejo moderado.",
+    "Evita cafeína a partir de las 15:00–16:00.",
+    "Reduce alcohol por la noche; altera el sueño profundo.",
+    "Hidrátate moderadamente; evita grandes cantidades justo antes de dormir.",
+    "Magnesio en la cena si lo usas habitualmente (consulta profesional si dudas).",
 
-    {
-        "id": "pausa_360",
-        "nombre": "Pausa 360º (vista amplia + respiración nasal)",
-        "dur_min": 1,
-        "momento": "oficina",
-        "contexto": "oficina",
-        "pasos": [
-            "Levanta la mirada de la pantalla y suaviza el enfoque (visión panorámica).",
-            "Respira por la nariz 6 ciclos lentos mientras mantienes el campo visual amplio.",
-        ],
-        "nota_seguridad": None,
-        "evidencia": "Visión periférica reduce foco de amenaza y activa redes calmantes."
-    },
+    # Microhábitos y entorno social
+    "Acuéstate y levántate a horas consistentes, incluso fines de semana (±1h).",
+    "Crea una frase puente: “Ahora toca descansar; mañana continúo”. Repítela 5 veces con respiración lenta.",
+    "Desordena menos: dedica 3 minutos a dejar el dormitorio recogido; reduce estímulos.",
+    "Usa tapones o máscara si ruido/luz interfieren.",
+    "Abrazo de 20 segundos con tu pareja o abrazo a ti mismo con respiración lenta.",
+
+    # Extras de atención plena
+    "Atiende a 10 respiraciones completas contando solo las exhalaciones.",
+    "Practica ‘visión panorámica’: relaja la mirada y amplía el campo visual durante 60–90s.",
+    "Siente el peso del cuerpo en el colchón; nota 5 puntos de apoyo mientras respiras lento.",
+    "Imagina que cada exhalación ‘apaga’ la tensión en hombros y cuello.",
+    "Coloca una mano en el pecho y otra en el abdomen; sincroniza manos con cada respiración.",
+
+    # Cierre de día
+    "Elige una intención amable para mañana y suéltala con una exhalación larga.",
+    "Agradece mentalmente a tu cuerpo por lo que te permitió hacer hoy.",
 ]
 
-# -------- Helpers de selección y formato --------
+# ------------------ utilidades de idioma ------------------
 
-def _match(c: Dict[str, Any], momento: Optional[str], contexto: Optional[str], max_min: Optional[int]) -> bool:
-    if momento and c["momento"] not in (momento, "cualquiera", "oficina"):
-        return False
-    if contexto and c["contexto"] not in (contexto, "cualquiera"):
-        return False
-    if max_min is not None and c["dur_min"] > max_min:
-        return False
-    return True
+_VALID_LANG = {"es","en","fr","it","de","pt","nl","sr","ru"}
 
-def consejo_aleatorio(filtro: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+_ALIAS = {
+    "sh":"sr","sc":"sr","srp":"sr","hr":"sr","bs":"sr",
+    "pt-br":"pt",
+}
+
+def _norm_lang(code: Optional[str]) -> str:
+    if not code:
+        return "es"
+    code = code.strip().lower().split("-")[0]
+    return _ALIAS.get(code, code)
+
+def _traducir(texto: str, lang: Optional[str]) -> str:
+    """Traducción opcional vía LibreTranslator. Si falla o lang es 'es', retorna el original."""
+    dest = _norm_lang(lang)
+    if not texto or dest == "es" or dest not in _VALID_LANG or LibreTranslator is None:
+        return texto
+    try:
+        return LibreTranslator(source="es", target=dest).translate(texto)
+    except Exception:
+        return texto
+
+# ------------------ API principal ------------------
+
+def sugerir_para_noche(dia: int | None = None, lang: Optional[str] = None) -> str:
     """
-    filtro opcional: {"momento": "noche|tarde|mañana|pico_estrés|oficina",
-                      "contexto": "oficina|casa|baño|cama|cualquiera",
-                      "max_min": 3}
+    Devuelve un consejo (traducido si pasas `lang`).
+    - Selección determinista por día (sin repetir hasta cubrir los 60).
+    - `dia`: si no se pasa, usa date.toordinal() del día actual.
     """
-    if filtro is None:
-        return random.choice(CONSEJOS_PARASIMPATICO)
-    momento = filtro.get("momento")
-    contexto = filtro.get("contexto")
-    max_min = filtro.get("max_min")
-    cand = [c for c in CONSEJOS_PARASIMPATICO if _match(c, momento, contexto, max_min)]
-    return random.choice(cand) if cand else random.choice(CONSEJOS_PARASIMPATICO)
+    if dia is None:
+        dia = datetime.date.today().toordinal()
+    idx = dia % len(CONSEJOS_PARASIMPATICO)
+    texto = CONSEJOS_PARASIMPATICO[idx]
+    return _traducir(texto, lang)
 
-def sugerir_por_tiempo(minutos: int, contexto: Optional[str] = None) -> Dict[str, Any]:
-    cand = [c for c in CONSEJOS_PARASIMPATICO if c["dur_min"] <= minutos and (not contexto or c["contexto"] in (contexto, "cualquiera"))]
-    return random.choice(cand) if cand else consejo_aleatorio()
-
-def sugerir_para_noche() -> Dict[str, Any]:
-    cand = [c for c in CONSEJOS_PARASIMPATICO if c["momento"] == "noche"]
-    return random.choice(cand) if cand else consejo_aleatorio()
-
-def sugerir_en_oficina(max_min: int = 3) -> Dict[str, Any]:
-    cand = [c for c in CONSEJOS_PARASIMPATICO if c["contexto"] == "oficina" and c["dur_min"] <= max_min]
-    return random.choice(cand) if cand else consejo_aleatorio({"contexto": "oficina"})
-
-def formatear_consejo(c: Dict[str, Any]) -> str:
-    pasos_txt = "\n".join([f"{i+1}. {p}" for i, p in enumerate(c["pasos"])])
-    nota = f"\n\nℹ️ {c['nota_seguridad']}" if c.get("nota_seguridad") else ""
-    evid = f"\n\n📚 {c['evidencia']}" if c.get("evidencia") else ""
-    return (
-        f"🧘 {c['nombre']} · {c['dur_min']} min\n"
-        f"{pasos_txt}"
-        f"{nota}{evid}"
-    )
-
-# -------- Ejemplos de uso rápido --------
-# consejo = consejo_aleatorio({"max_min": 2, "contexto": "oficina"})
-# print(formatear_consejo(consejo))
-#
-# consejo = sugerir_para_noche()
-# print(formatear_consejo(consejo))
-#
-# consejo = sugerir_por_tiempo(1)
-# print(formatear_consejo(consejo))
+def formatear_consejo(texto: str, lang: Optional[str] = None) -> str:
+    """
+    Devuelve el texto formateado con encabezado y traducción opcional.
+    Si `texto` ya viene traducido, puedes llamar con lang=None.
+    """
+    encabezado = "🌙 Consejo para relajar tu sistema parasimpático esta noche:"
+    encabezado = _traducir(encabezado, lang)
+    cuerpo = _traducir(texto, lang) if lang else texto
+    return f"{encabezado}\n\n{cuerpo}"
