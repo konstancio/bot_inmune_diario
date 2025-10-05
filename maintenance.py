@@ -1,12 +1,12 @@
-# maintenance.py — refrescar collation y reindexar con logs claros
+# maintenance.py — refresca collation y reindexa (con logs claros y tolerante a permisos)
 
 from usuarios_repo import _get_conn
 
 SQL_INFO = """
-SELECT current_database() AS db,
+SELECT datname       AS db,
        datcollate,
        datctype,
-       collversion
+       datcollversion
 FROM pg_database
 WHERE datname = current_database();
 """
@@ -15,13 +15,19 @@ def main():
     try:
         with _get_conn() as conn, conn.cursor() as cur:
             print("🔧 Iniciando mantenimiento…")
+
+            # Nombre real de la BD actual
+            cur.execute("SELECT current_database();")
+            dbname = cur.fetchone()[0]
+            print(f"ℹ️  Base de datos detectada: {dbname}")
+
             print("ℹ️  Estado ANTES:")
             cur.execute(SQL_INFO)
             print(cur.fetchone())
 
             # 1) REFRESH COLLATION VERSION
             try:
-                cur.execute('ALTER DATABASE CURRENT DATABASE REFRESH COLLATION VERSION;')
+                cur.execute(f'ALTER DATABASE "{dbname}" REFRESH COLLATION VERSION;')
                 print("✅ REFRESH COLLATION VERSION ejecutado.")
             except Exception as e:
                 print(f"⚠️ No se pudo REFRESH COLLATION VERSION (permiso u otra razón): {e}")
@@ -31,16 +37,16 @@ def main():
             cur.execute(SQL_INFO)
             print(cur.fetchone())
 
-            # 3) Reindexar lo importante
+            # 3) Reindexar la tabla principal (rápido)
             try:
-                cur.execute('REINDEX TABLE subscribers;')
+                cur.execute("REINDEX TABLE IF EXISTS subscribers;")
                 print("✅ REINDEX TABLE subscribers ok.")
             except Exception as e:
                 print(f"⚠️ No se pudo REINDEX TABLE subscribers: {e}")
 
-            # 4) (Opcional) Reindexar todo — comenta si no lo quieres
+            # 4) Reindexar toda la BD (opcional; puede bloquear brevemente)
             try:
-                cur.execute('REINDEX DATABASE CURRENT DATABASE;')
+                cur.execute(f'REINDEX DATABASE "{dbname}";')
                 print("✅ REINDEX DATABASE completo ok.")
             except Exception as e:
                 print(f"⚠️ No se pudo REINDEX DATABASE completo: {e}")
