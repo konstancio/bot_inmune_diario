@@ -1,55 +1,60 @@
-# maintenance.py — refresca collation y reindexa (con logs claros y tolerante a permisos)
+# maintenance.py — collation OK + reindex robusto
 
 from usuarios_repo import _get_conn
 
 SQL_INFO = """
-SELECT datname       AS db,
-       datcollate,
-       datctype,
-       datcollversion
-FROM pg_database
-WHERE datname = current_database();
+SELECT datname AS db, datcollate, datctype, datcollversion
+FROM pg_database WHERE datname = current_database();
 """
 
 def main():
     try:
         with _get_conn() as conn, conn.cursor() as cur:
             print("🔧 Iniciando mantenimiento…")
-
-            # Nombre real de la BD actual
             cur.execute("SELECT current_database();")
             dbname = cur.fetchone()[0]
             print(f"ℹ️  Base de datos detectada: {dbname}")
 
             print("ℹ️  Estado ANTES:")
-            cur.execute(SQL_INFO)
-            print(cur.fetchone())
+            cur.execute(SQL_INFO); print(cur.fetchone())
 
-            # 1) REFRESH COLLATION VERSION
+            # Ya lo hiciste antes, pero por si vuelves a lanzar el script:
             try:
                 cur.execute(f'ALTER DATABASE "{dbname}" REFRESH COLLATION VERSION;')
                 print("✅ REFRESH COLLATION VERSION ejecutado.")
             except Exception as e:
-                print(f"⚠️ No se pudo REFRESH COLLATION VERSION (permiso u otra razón): {e}")
+                print(f"⚠️ REFRESH COLLATION VERSION no se pudo (ok ignorar si ya está): {e}")
 
-            # 2) Mostrar estado DESPUÉS
             print("ℹ️  Estado DESPUÉS:")
-            cur.execute(SQL_INFO)
-            print(cur.fetchone())
+            cur.execute(SQL_INFO); print(cur.fetchone())
 
-            # 3) Reindexar la tabla principal (rápido)
+            # --- REINDEX TABLE subscribers (si existe) ---
             try:
-                cur.execute("REINDEX TABLE IF EXISTS subscribers;")
-                print("✅ REINDEX TABLE subscribers ok.")
+                cur.execute("SELECT to_regclass('public.subscribers');")
+                exists = cur.fetchone()[0] is not None
+                if exists:
+                    cur.execute("REINDEX TABLE public.subscribers;")
+                    print("✅ REINDEX TABLE public.subscribers ok.")
+                else:
+                    print("ℹ️  Tabla public.subscribers no existe; se omite.")
             except Exception as e:
-                print(f"⚠️ No se pudo REINDEX TABLE subscribers: {e}")
+                print(f"⚠️ REINDEX TABLE public.subscribers falló: {e}")
+                try:
+                    conn.rollback()
+                    print("ℹ️  rollback ok (continuamos).")
+                except Exception:
+                    pass
 
-            # 4) Reindexar toda la BD (opcional; puede bloquear brevemente)
+            # --- REINDEX DATABASE completo (opcional) ---
             try:
                 cur.execute(f'REINDEX DATABASE "{dbname}";')
                 print("✅ REINDEX DATABASE completo ok.")
             except Exception as e:
-                print(f"⚠️ No se pudo REINDEX DATABASE completo: {e}")
+                print(f"⚠️ REINDEX DATABASE falló (puede omitirse): {e}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
         print("🎉 Mantenimiento terminado.")
     except Exception as e:
