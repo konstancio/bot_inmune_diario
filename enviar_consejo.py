@@ -26,6 +26,9 @@ from usuarios_repo import (
     migrate_fill_defaults
 )
 
+import hashlib
+from consejos_nutri import CONSEJOS_NUTRI
+
 # --- módulo solar/meteo de tu repo ---
 from ubicacion_y_sol import (
     obtener_ubicacion,
@@ -77,6 +80,19 @@ def geocodificar_ciudad(ciudad: str):
     except Exception as e:
         print(f"⚠️ Geocodificación fallida ({ciudad}): {e}")
         return None
+
+def _pick_nutri_tip(estacion: str, chat_id: str, fecha: datetime.date) -> str:
+    """
+    Devuelve un consejo nutricional de CONSEJOS_NUTRI[estacion] sin repetirse:
+    índice estable por usuario y por fecha (rota a diario y por usuario).
+    """
+    lista = CONSEJOS_NUTRI.get(estacion, [])
+    if not lista:
+        return "Consejo nutricional no disponible."
+    seed = f"{chat_id}-{fecha.toordinal()}"
+    h = int(hashlib.sha256(seed.encode()).hexdigest(), 16)
+    return lista[h % len(lista)]
+
 
 # ========== Compat firmas (por si cambian) ==========
 def _calc_tramos_compat(fecha_loc, lat, lon, tzname):
