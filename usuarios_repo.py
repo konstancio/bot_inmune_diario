@@ -211,8 +211,32 @@ def _should_send_generic(chat: dict, target_hour_key: str, last_key: str, now_ut
     return in_window and not already
 
 def should_send_now(chat: dict, now_utc: Optional[datetime] = None) -> bool:
-    """Consejo diurno (9:00 por defecto)."""
-    return _should_send_generic(chat, "send_hour_local", "last_sent_iso", now_utc)
+    """
+    Cron cada 5 min:
+      - Convierte now_utc a hora local del usuario (chat["tz"])
+      - Envía si: local_hour == send_hour_local y 0<=min<30 (ventana 30 min)
+      - Y si aún no se envió hoy (comparando fecha local con last_sent_iso)
+    """
+    tzname = (chat.get("tz") or "Europe/Madrid").strip()
+    send_hour = int(chat.get("send_hour_local", 9))
+
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    try:
+        tz = pytz.timezone(tzname)
+    except Exception:
+        tz = pytz.timezone("Europe/Madrid")
+        tzname = "Europe/Madrid"
+
+    now_local = now_utc.astimezone(tz)
+    local_date = now_local.date()
+    last_sent_iso = chat.get("last_sent_iso")
+    already_sent_today = (last_sent_iso == local_date.isoformat())
+
+    # ⬇️ margen de 30 min para que el cron no “se lo salte”
+    in_window = (now_local.hour == send_hour and 0 <= now_local.minute < 30)
+
+    return in_window and not already_sent_today
 
 def should_send_sleep_now(chat: dict, now_utc: Optional[datetime] = None) -> bool:
     """Consejo parasimpático nocturno (21:00 por defecto)."""
