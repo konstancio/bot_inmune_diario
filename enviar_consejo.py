@@ -1,12 +1,13 @@
-# enviar_consejo.py — dos envíos diarios + publicación en canal
-#  • Mañana (09:00 por defecto): ventanas 30–40° + meteo o consejo nutricional por estación
-#  • Noche  (21:00 por defecto): ejercicio parasimpático para dormir
-# También publica una copia en tu canal (si CANAL_CHAT_ID está definido).
-# Traducción multi-idioma, anti-duplicados y flags de diagnóstico.
+# enviar_consejo.py — envíos diurno/nocturno + plan B nutricional + publicación en canal
+# - Diurno (09:00 por defecto): consejo inmune + ventanas 30–40° con meteo.
+#   Si no hay ventanas o está muy nublado/lluvia ⇒ consejo nutricional por estación (varía a diario).
+# - Nocturno (21:00 por defecto): consejo parasimpático.
+# - Traducción automática, publicación opcional en canal y guardarraíles anti-doble envío.
 
 import os
 import asyncio
 import datetime
+import hashlib
 from typing import Optional, List, Tuple, Any
 
 from telegram import Bot
@@ -15,6 +16,7 @@ from geopy.geocoders import Nominatim
 from timezonefinder import TimezoneFinder
 import pytz
 
+# ---- Contenido y repos ----
 from consejos_diarios import consejos
 from consejos_nutri import CONSEJOS_NUTRI
 from consejos_parasimpatico import sugerir_para_noche, formatear_consejo
@@ -25,9 +27,6 @@ from usuarios_repo import (
     mark_sent_today, mark_sleep_sent_today,
     migrate_fill_defaults
 )
-
-import hashlib
-from consejos_nutri import CONSEJOS_NUTRI
 
 # --- módulo solar/meteo de tu repo ---
 from ubicacion_y_sol import (
@@ -80,19 +79,6 @@ def geocodificar_ciudad(ciudad: str):
     except Exception as e:
         print(f"⚠️ Geocodificación fallida ({ciudad}): {e}")
         return None
-
-def _pick_nutri_tip(estacion: str, chat_id: str, fecha: datetime.date) -> str:
-    """
-    Devuelve un consejo nutricional de CONSEJOS_NUTRI[estacion] sin repetirse:
-    índice estable por usuario y por fecha (rota a diario y por usuario).
-    """
-    lista = CONSEJOS_NUTRI.get(estacion, [])
-    if not lista:
-        return "Consejo nutricional no disponible."
-    seed = f"{chat_id}-{fecha.toordinal()}"
-    h = int(hashlib.sha256(seed.encode()).hexdigest(), 16)
-    return lista[h % len(lista)]
-
 
 # ========== Compat firmas (por si cambian) ==========
 def _calc_tramos_compat(fecha_loc, lat, lon, tzname):
@@ -200,21 +186,25 @@ def _meteo_impide_sintesis(pron: Any, tramo_m, tramo_t) -> bool:
         return True
     return False
 
-def _texto_consejo_estacion(estacion: str) -> str:
-    data = CONSEJOS_NUTRI.get(estacion)
-    if data is None:
+# ========== Variedad en días nublados ==========
+def _pick_nutri_tip(estacion: str, chat_id: str, fecha: datetime.date) -> str:
+    """
+    Devuelve un consejo nutricional de CONSEJOS_NUTRI[estacion] sin repetirse:
+    índice estable por usuario y por fecha (rota a diario y por usuario).
+    """
+    lista = CONSEJOS_NUTRI.get(estacion, [])
+    if not lista:
         return "Mantén una dieta equilibrada con alimentos ricos en vitamina D y omega-3."
-    if isinstance(data, str):
-        return data.strip()
-    if isinstance(data, (list, tuple)):
-        return " ".join([str(x).strip() for x in data if x]).strip()
-    return str(data)
+    seed = f"{chat_id}-{fecha.toordinal()}"
+    h = int(hashlib.sha256(seed.encode()).hexdigest(), 16)
+    return str(lista[h % len(lista)])
 
 # ========== Envío DIURNO ==========
 async def enviar_diurno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime, context_flags: dict):
     if not FORCE_SEND and not should_send_now(prefs, now_utc=now_utc):
         return
 
+    # Zona horaria y fecha local
     try:
         tz = pytz.timezone(prefs.get("tz", "Europe/Madrid"))
     except Exception:
@@ -237,7 +227,7 @@ async def enviar_diurno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.d
         else:
             ub = obtener_ubicacion(); lat, lon, tzname, ciudad = float(ub["latitud"]), float(ub["longitud"]), ub["timezone"], ub["ciudad"]
 
-    # Consejo + referencia del día
+    # Consejo inmune del día (según día semana, pares [texto, ref])
     dia_semana = now_local.weekday()
     lista_dia = consejos[dia_semana]
     pares = [lista_dia[i:i+2] for i in range(0, len(lista_dia), 2)]
@@ -249,26 +239,48 @@ async def enviar_diurno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.d
     tramo_m, tramo_t = _calc_tramos_compat(hoy_local, lat, lon, tzname)
     pron = _pronostico_compat(lat, lon, hoy_local, tzname)
 
+    # ¿Hay impedimento para síntesis (nublado fuerte/lluvia) o no hay ventanas?
     if _meteo_impide_sintesis(pron, tramo_m, tramo_t):
         est = estacion_del_anio(hoy_local, lat)
-        bloque_tramos = (
-            "⛅ Hoy no se esperan ventanas útiles de sol para sintetizar vitamina D.\n"
-            f"🍽️ Consejo de temporada ({est}): {_texto_consejo_estacion(est)}"
+        consejo_nutri_es = _pick_nutri_tip(est, str(chat_id), hoy_local)
+        lang = prefs.get("lang", "es")
+        cuerpo = traducir(
+            f"☁️ Hoy no hay ventanas seguras de 30–40° para sintetizar vitamina D en {ciudad}.\n"
+            f"🍽️ Consejo nutricional de {est}:\n{consejo_nutri_es}",
+            lang
         )
-    else:
-        bloque_tramos = _tramos_a_texto_detallado(ciudad, tramo_m, tramo_t)
-        if SHOW_FORMATO_METEO:
-            try:
-                extra = formatear_intervalos_meteo(tramo_m, tramo_t, ciudad, pron)
-            except TypeError:
-                try:
-                    extra = formatear_intervalos_meteo(tramo_m, tramo_t, ciudad)
-                except Exception:
-                    extra = None
-            if extra and isinstance(extra, str):
-                bloque_tramos += f"\n({extra})"
+        if len(cuerpo) > 4000:
+            cuerpo = cuerpo[:3990] + "…"
 
-    # Mensaje + traducción
+        # Enviar al usuario
+        await bot.send_message(chat_id=chat_id, text=cuerpo)
+        mark_sent_today(chat_id, hoy_local)
+
+        # Publicar UNA VEZ por ciclo en el canal (si está definido)
+        if CANAL_CHAT_ID and not context_flags.get("posted_channel_diurno", False):
+            try:
+                pub = f"🔔 Consejo público:\n{cuerpo}"
+                if len(pub) > 3800:
+                    pub = pub[:3790] + "…"
+                await bot.send_message(chat_id=CANAL_CHAT_ID, text=pub)
+                context_flags["posted_channel_diurno"] = True
+            except Exception as e:
+                print(f"[WARN] No pude publicar en canal (diurno, nublado): {e}")
+        return  # importante: no seguir con bloque solar
+
+    # Si hay Sol: mensaje inmune normal con tramos (y meteo opcional)
+    bloque_tramos = _tramos_a_texto_detallado(ciudad, tramo_m, tramo_t)
+    if SHOW_FORMATO_METEO:
+        try:
+            extra = formatear_intervalos_meteo(tramo_m, tramo_t, ciudad, pron)
+        except TypeError:
+            try:
+                extra = formatear_intervalos_meteo(tramo_m, tramo_t, ciudad)
+            except Exception:
+                extra = None
+        if extra and isinstance(extra, str):
+            bloque_tramos += f"\n({extra})"
+
     lang = prefs.get("lang", "es")
     cuerpo = f"{consejo_es}\n\n{referencia_es}\n\n{bloque_tramos}"
     cuerpo = traducir(cuerpo, lang) or cuerpo
@@ -288,7 +300,7 @@ async def enviar_diurno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.d
             await bot.send_message(chat_id=CANAL_CHAT_ID, text=pub)
             context_flags["posted_channel_diurno"] = True
         except Exception as e:
-            print(f"[WARN] No pude publicar en canal (diurno): {e}")
+            print(f"[WARN] No pude publicar en canal (diurno, soleado): {e}")
 
 # ========== Envío NOCTURNO ==========
 async def enviar_nocturno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime, context_flags: dict):
@@ -304,11 +316,13 @@ async def enviar_nocturno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime
     if prefs.get("last_sleep_sent_iso") == hoy_local.isoformat():
         return
 
-    consejo = sugerir_para_noche()
-    texto = formatear_consejo(consejo)
-
+    # Puedes devolver ya traducido desde el módulo, pero mantenemos tu pipeline:
     lang = prefs.get("lang", "es")
-    mensaje = traducir(texto, lang) or texto
+    consejo_txt = sugerir_para_noche(lang=lang)             # ya sale traducido si pasamos lang
+    mensaje = formatear_consejo(consejo_txt, lang=lang)     # encabezado traducido
+
+    if len(mensaje) > 4000:
+        mensaje = mensaje[:3990] + "…"
 
     # Enviar al usuario
     await bot.send_message(chat_id=chat_id, text=mensaje)
