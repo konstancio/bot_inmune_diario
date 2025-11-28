@@ -1,6 +1,6 @@
-# enviar_consejo.py — envíos diurno/nocturno + plan B nutricional + publicación en canal
+# enviar_consejo.py — envíos diurno/nocturno + plan B nutricional + canal
 # - Diurno (09:00 por defecto): consejo inmune + ventanas 30–40° con meteo.
-#   Si no hay ventanas o está muy nublado/lluvia ⇒ consejo nutricional por estación (varía a diario).
+#   Si no hay ventanas o llueve fuerte / muy nublado ⇒ consejo nutricional por estación (varía a diario).
 # - Nocturno (21:00 por defecto): consejo parasimpático.
 # - Traducción automática, publicación opcional en canal y guardarraíles anti-doble envío.
 
@@ -158,33 +158,49 @@ def _tramos_a_texto_detallado(ciudad: str, tramo_m, tramo_t) -> str:
         lineas.append("Hoy no hay ventanas solares seguras (30–40°).")
     return "\n".join(lineas)
 
+# ========= NUEVO: detección meteo suavizada =========
 def _meteo_impide_sintesis(pron: Any, tramo_m, tramo_t) -> bool:
+    """
+    Devuelve True si el pronóstico o los tramos solares impiden la síntesis de vitamina D.
+    Dia 'aprovechable' si hay al menos una ventana 30–40°, aunque haya nubosidad.
+    Marca malo si NO hay tramos y además hay nubes muy altas (>90%) o lluvia significativa.
+    """
+    # Si hay al menos un tramo válido de 30–40°, consideramos el día válido.
+    tramos_validos = _normalize_tramos(tramo_m) or _normalize_tramos(tramo_t)
+    if tramos_validos:
+        return False
+
+    # Si no hay tramos, evaluamos la meteorología
     if not pron:
-        return (not _normalize_tramos(tramo_m) and not _normalize_tramos(tramo_t))
+        return True
+
     try:
+        # Cobertura nubosa media: muy nublado solo si >= 90 %
         cc = None
-        for k in ("cloudcover_mean","cloudcover","clouds","nubes"):
+        for k in ("cloudcover_mean", "cloudcover", "clouds", "nubes"):
             if isinstance(pron, dict) and k in pron:
                 cc = pron[k]; break
-        if isinstance(cc, (int,float)) and cc >= 80:
+        if isinstance(cc, (int, float)) and cc >= 90:
             return True
+
+        # Lluvia: significativo si > 1 mm
         pr = None
-        for k in ("total_precipitation","precipitation","rain","lluvia"):
+        for k in ("total_precipitation", "precipitation", "rain", "lluvia"):
             if isinstance(pron, dict) and k in pron:
                 pr = pron[k]; break
-        if isinstance(pr, (int,float)) and pr > 0.1:
+        if isinstance(pr, (int, float)) and pr > 1.0:
             return True
-        wc = pron.get("weathercode") if isinstance(pron, dict) else None
-        if isinstance(wc, int) and wc >= 51:
+
+        # Condición textual severa
+        cond = str(pron.get("condition", "")).lower() if isinstance(pron, dict) else ""
+        if any(x in cond for x in ["tormenta", "fuerte lluvia", "rain heavy", "storm"]):
             return True
-        cond = pron.get("condition") if isinstance(pron, dict) else None
-        if isinstance(cond, str) and cond.lower() in ("overcast","cloudy","rain","storm","tormenta","lluvia","muy nuboso"):
-            return True
-    except Exception:
-        pass
-    if not _normalize_tramos(tramo_m) and not _normalize_tramos(tramo_t):
-        return True
-    return False
+
+    except Exception as e:
+        print(f"[WARN] Evaluando meteo: {e}")
+
+    # Si no hay tramos y tampoco evidencia clara de meteo severa ⇒ probablemente no útil
+    return True
 
 # ========== Variedad en días nublados ==========
 def _pick_nutri_tip(estacion: str, chat_id: str, fecha: datetime.date) -> str:
@@ -316,7 +332,6 @@ async def enviar_nocturno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime
     if prefs.get("last_sleep_sent_iso") == hoy_local.isoformat():
         return
 
-    # Puedes devolver ya traducido desde el módulo, pero mantenemos tu pipeline:
     lang = prefs.get("lang", "es")
     consejo_txt = sugerir_para_noche(lang=lang)             # ya sale traducido si pasamos lang
     mensaje = formatear_consejo(consejo_txt, lang=lang)     # encabezado traducido
