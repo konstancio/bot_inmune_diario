@@ -1,62 +1,79 @@
-# enviar_consejo.py — envíos diurno/nocturno + plan B nutricional + canal
-# - Diurno (09:00 por defecto): consejo inmune + ventanas 30–40° con meteo.
-#   Si no hay ventanas o llueve fuerte / muy nublado ⇒ consejo nutricional por estación (varía a diario).
-# - Nocturno (21:00 por defecto): consejo parasimpático.
-# - Traducción automática, publicación opcional en canal y guardarraíles anti-doble envío.
+# enviar_consejo.py — multiusuario (cron) + vit D 30–40° + meteo + consejo nutricional por estación + traducción
+# - Envía a cada usuario a su hora local (por defecto 9) sin duplicar por día
+# - Calcula tramos seguros 30–40° (mañana/tarde)
+# - Si NO hay tramos (Sol <30°) -> mensaje astronómico (no se puede por latitud)
+# - Si SÍ hay tramos pero la meteo lo impide -> muestra igualmente las horas 30–40° como "teóricas"
+# - Si SÍ hay tramos y la meteo es OK -> muestra las horas 30–40° y consejo normal
+#
+# Variables de entorno:
+#   BOT_TOKEN        (obligatoria)
+#   DATABASE_DSN     (obligatoria para Postgres)
+#   FORCE_SEND=1     (opcional: envía aunque no sea la hora; respeta "no duplicados" del día)
+#   ONLY_CHAT_ID=... (opcional: procesa solo ese chat_id)
+#   PING_ON_START=1  (opcional: manda un ping de diagnóstico al usuario)
+#   CANAL_CHAT_ID=.. (opcional: publica también en un canal)
+#
+# Requiere: python-telegram-bot (Bot), deep-translator, pytz
 
 import os
 import asyncio
 import datetime
-import hashlib
-from typing import Optional, List, Tuple, Any
+from typing import Optional, Tuple, Any, Dict
 
+import pytz
 from telegram import Bot
 from deep_translator import LibreTranslator
-from geopy.geocoders import Nominatim
-from timezonefinder import TimezoneFinder
-import pytz
 
-# ---- Contenido y repos ----
 from consejos_diarios import consejos
 from consejos_nutri import CONSEJOS_NUTRI
-from consejos_parasimpatico import sugerir_para_noche, formatear_consejo
-
 from usuarios_repo import (
-    init_db, list_users,
-    should_send_now, should_send_sleep_now,
-    mark_sent_today, mark_sleep_sent_today,
-    migrate_fill_defaults
+    init_db,
+    list_users,
+    should_send_now,
+    mark_sent_today,
 )
 
-# --- módulo solar/meteo de tu repo ---
 from ubicacion_y_sol import (
-    obtener_ubicacion,
-    calcular_intervalos_optimos,     # ventanas 30–40° (mañana/tarde)
-    obtener_pronostico_diario,       # pronóstico (sin API key)
-    formatear_intervalos_meteo,      # string opcional con emojis/meteo
+    obtener_ubicacion,          # fallback general
+    calcular_intervalos_optimos, # tu cálculo "preciso" (ya lo tienes funcionando)
+    obtener_pronostico_diario,   # Open-Meteo (ya lo tienes)
 )
 
-# ========== Flags / Entorno ==========
-BOT_TOKEN       = os.getenv("BOT_TOKEN")
-FORCE_SEND      = os.getenv("FORCE_SEND", "0") == "1"     # fuerza 1 envío por tipo hoy
-ONLY_CHAT_ID    = os.getenv("ONLY_CHAT_ID")               # limita a un chat para pruebas
-PING_ON_START   = os.getenv("PING_ON_START", "0") == "1"  # ping al iniciar si ONLY_CHAT_ID
-SHOW_FORMATO_METEO = True
+# -------------------- ENV --------------------
 
-# Canal (público o privado). Ejemplos: @MiCanal  o  -1001234567890
-CANAL_CHAT_ID   = os.getenv("CANAL_CHAT_ID")  # si está vacío, no publica al canal
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+FORCE_SEND = os.getenv("FORCE_SEND", "0").strip() == "1"
+PING_ON_START = os.getenv("PING_ON_START", "0").strip() == "1"
+ONLY_CHAT_ID = os.getenv("ONLY_CHAT_ID")
+CANAL_CHAT_ID = os.getenv("CANAL_CHAT_ID")  # opcional
 
-# ========== Traducción ==========
+# -------------------- Traducción --------------------
+
+# Idiomas soportados por tu bot (canónicos)
+VALID_LANG = {"es", "en", "fr", "it", "de", "pt", "nl", "sr", "ru"}
+
+# Alias -> canónico
+_LANG_ALIAS = {
+    # serbio como proxy para croata/bosnio (+ códigos antiguos)
+    "sh": "sr", "sc": "sr", "srp": "sr", "hr": "sr", "bs": "sr",
+    # variantes comunes
+    "pt-br": "pt",
+    # a veces llegan así:
+    "es-es": "es", "en-us": "en", "en-gb": "en",
+}
+
 def _norm_lang(code: Optional[str]) -> str:
     if not code:
         return "es"
-    code = code.strip().lower().split("-")[0]
-    alias = {"sh":"sr","sc":"sr","srp":"sr","hr":"sr","bs":"sr","pt-br":"pt"}
-    return alias.get(code, code)
+    code = code.strip().lower()
+    code = _LANG_ALIAS.get(code, code)
+    if code not in VALID_LANG:
+        return "es"
+    return code
 
 def traducir(texto: str, lang: Optional[str]) -> str:
     dest = _norm_lang(lang)
-    if dest == "es" or not texto:
+    if dest == "es":
         return texto
     try:
         return LibreTranslator(source="es", target=dest).translate(texto)
@@ -64,339 +81,345 @@ def traducir(texto: str, lang: Optional[str]) -> str:
         print(f"⚠️ Traducción fallida ({dest}): {e}")
         return texto
 
-# ========== Geocodificación ==========
-_geolocator = Nominatim(user_agent="bot_inmune_diario_multi")
-_tf = TimezoneFinder()
+# -------------------- Estación del año --------------------
 
-def geocodificar_ciudad(ciudad: str):
-    try:
-        loc = _geolocator.geocode(ciudad)
-        if not loc:
-            return None
-        tz = _tf.timezone_at(lat=loc.latitude, lng=loc.longitude) or "Europe/Madrid"
-        nombre = loc.address.split(",")[0] if loc.address else ciudad
-        return {"lat": float(loc.latitude), "lon": float(loc.longitude), "tz": tz, "ciudad": nombre}
-    except Exception as e:
-        print(f"⚠️ Geocodificación fallida ({ciudad}): {e}")
-        return None
+def estacion_del_anio(fecha: datetime.date, lat: float) -> str:
+    """
+    Devuelve: 'Primavera'|'Verano'|'Otoño'|'Invierno'
+    Ajusta por hemisferio según latitud.
+    """
+    # Rangos meteorológicos aproximados por meses (simple y robusto)
+    m = fecha.month
+    hemisferio_norte = (lat is None) or (lat >= 0)
 
-# ========== Compat firmas (por si cambian) ==========
-def _calc_tramos_compat(fecha_loc, lat, lon, tzname):
-    try:
-        return calcular_intervalos_optimos(fecha=fecha_loc, lat=lat, lon=lon, tz=tzname)
-    except TypeError:
-        pass
-    for args in [
-        (fecha_loc, lat, lon, tzname),
-        (lat, lon, tzname, fecha_loc),
-        (tzname, fecha_loc, lat, lon),
-        (lat, lon, fecha_loc, tzname),
-    ]:
-        try:
-            return calcular_intervalos_optimos(*args)
-        except Exception:
-            continue
-    print("[ERR] calcular_intervalos_optimos: firma desconocida.")
-    return None, None
-
-def _pronostico_compat(lat, lon, fecha_loc, tzname):
-    try:
-        return obtener_pronostico_diario(lat=lat, lon=lon, fecha=fecha_loc, tz=tzname)
-    except TypeError:
-        pass
-    for args in [(lat, lon, fecha_loc, tzname), (lat, lon, tzname, fecha_loc)]:
-        try:
-            return obtener_pronostico_diario(*args)
-        except Exception:
-            continue
-    print("[WARN] obtener_pronostico_diario: firma desconocida.")
-    return None
-
-# ========== Estación del año ==========
-def estacion_del_anio(fecha: datetime.date, lat: Optional[float]) -> str:
-    Y = fecha.year
-    prim_i, ver_i, oto_i, inv_i = (datetime.date(Y,3,20), datetime.date(Y,6,21),
-                                   datetime.date(Y,9,23), datetime.date(Y,12,21))
-    norte = (lat is None) or (lat >= 0.0)
-    if norte:
-        if prim_i <= fecha < ver_i:  return "Primavera"
-        if ver_i  <= fecha < oto_i:  return "Verano"
-        if oto_i  <= fecha < inv_i:  return "Otoño"
-        return "Invierno"
+    if hemisferio_norte:
+        if m in (12, 1, 2):
+            return "Invierno"
+        if m in (3, 4, 5):
+            return "Primavera"
+        if m in (6, 7, 8):
+            return "Verano"
+        return "Otoño"
     else:
-        if prim_i <= fecha < ver_i:  return "Otoño"
-        if ver_i  <= fecha < oto_i:  return "Invierno"
-        if oto_i  <= fecha < inv_i:  return "Primavera"
-        return "Verano"
+        # invertido
+        if m in (12, 1, 2):
+            return "Verano"
+        if m in (3, 4, 5):
+            return "Otoño"
+        if m in (6, 7, 8):
+            return "Invierno"
+        return "Primavera"
 
-# ========== Formateo ==========
-def _fmt_hhmm(dtobj: datetime.datetime) -> str:
-    return dtobj.strftime("%H:%M")
-
-def _normalize_tramos(tramo) -> List[Tuple[datetime.datetime, datetime.datetime]]:
-    if not tramo:
-        return []
-    if isinstance(tramo, tuple) and len(tramo) == 2:
-        return [tramo]
-    if isinstance(tramo, list):
-        return [t for t in tramo if isinstance(t, tuple) and len(t) == 2]
-    return []
-
-def _tramos_a_texto_detallado(ciudad: str, tramo_m, tramo_t) -> str:
-    m = _normalize_tramos(tramo_m)
-    t = _normalize_tramos(tramo_t)
-    lineas = [f"🌞 Intervalos solares seguros para producir vit. D hoy en {ciudad}:"]
-    if m:
-        lineas.append("🌇 Mañana:")
-        for a,b in m:
-            lineas.append(f"🕒 {_fmt_hhmm(a)} - {_fmt_hhmm(b)}")
-    if t:
-        lineas.append("🌇 Tarde:")
-        for a,b in t:
-            lineas.append(f"🕒 {_fmt_hhmm(a)} - {_fmt_hhmm(b)}")
-    if not m and not t:
-        lineas.append("Hoy no hay ventanas solares seguras (30–40°).")
-    return "\n".join(lineas)
-
-# ========= NUEVO: detección meteo suavizada =========
-def _meteo_impide_sintesis(pron: Any, tramo_m, tramo_t) -> bool:
-    """
-    Devuelve True si el pronóstico o los tramos solares impiden la síntesis de vitamina D.
-    Dia 'aprovechable' si hay al menos una ventana 30–40°, aunque haya nubosidad.
-    Marca malo si NO hay tramos y además hay nubes muy altas (>90%) o lluvia significativa.
-    """
-    # Si hay al menos un tramo válido de 30–40°, consideramos el día válido.
-    tramos_validos = _normalize_tramos(tramo_m) or _normalize_tramos(tramo_t)
-    if tramos_validos:
-        return False
-
-    # Si no hay tramos, evaluamos la meteorología
-    if not pron:
-        return True
-
-    try:
-        # Cobertura nubosa media: muy nublado solo si >= 90 %
-        cc = None
-        for k in ("cloudcover_mean", "cloudcover", "clouds", "nubes"):
-            if isinstance(pron, dict) and k in pron:
-                cc = pron[k]; break
-        if isinstance(cc, (int, float)) and cc >= 90:
-            return True
-
-        # Lluvia: significativo si > 1 mm
-        pr = None
-        for k in ("total_precipitation", "precipitation", "rain", "lluvia"):
-            if isinstance(pron, dict) and k in pron:
-                pr = pron[k]; break
-        if isinstance(pr, (int, float)) and pr > 1.0:
-            return True
-
-        # Condición textual severa
-        cond = str(pron.get("condition", "")).lower() if isinstance(pron, dict) else ""
-        if any(x in cond for x in ["tormenta", "fuerte lluvia", "rain heavy", "storm"]):
-            return True
-
-    except Exception as e:
-        print(f"[WARN] Evaluando meteo: {e}")
-
-    # Si no hay tramos y tampoco evidencia clara de meteo severa ⇒ probablemente no útil
-    return True
-
-# ========== Variedad en días nublados ==========
 def _pick_nutri_tip(estacion: str, chat_id: str, fecha: datetime.date) -> str:
     """
-    Devuelve un consejo nutricional de CONSEJOS_NUTRI[estacion] sin repetirse:
-    índice estable por usuario y por fecha (rota a diario y por usuario).
+    CONSEJOS_NUTRI[estacion] puede ser tupla/lista de strings o un string.
+    Elegimos 1 de forma estable por fecha+usuario.
     """
-    lista = CONSEJOS_NUTRI.get(estacion, [])
-    if not lista:
-        return "Mantén una dieta equilibrada con alimentos ricos en vitamina D y omega-3."
-    seed = f"{chat_id}-{fecha.toordinal()}"
-    h = int(hashlib.sha256(seed.encode()).hexdigest(), 16)
-    return str(lista[h % len(lista)])
+    opciones = CONSEJOS_NUTRI.get(estacion) or CONSEJOS_NUTRI.get("Invierno")
+    if opciones is None:
+        return "Prioriza alimentos reales ricos en nutrientes y, si procede, alimentos fortificados en vitamina D."
+    if isinstance(opciones, str):
+        return opciones
+    try:
+        opciones = list(opciones)
+        if not opciones:
+            return "Prioriza alimentos reales ricos en nutrientes y, si procede, alimentos fortificados en vitamina D."
+        idx = (hash(str(chat_id)) + fecha.toordinal()) % len(opciones)
+        return opciones[idx]
+    except Exception:
+        return "Prioriza alimentos reales ricos en nutrientes y, si procede, alimentos fortificados en vitamina D."
 
-# ========== Envío DIURNO ==========
-async def enviar_diurno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime, context_flags: dict):
-    if not FORCE_SEND and not should_send_now(prefs, now_utc=now_utc):
+# -------------------- Meteo: decidir si “impide” vit D --------------------
+
+# Códigos Open-Meteo típicos (WMO):
+# 0: despejado, 1/2/3: principalmente despejado/ parcialmente/ nublado
+# 45/48: niebla, 51-67: llovizna, 61-65: lluvia, 71-77: nieve, 80-82: chubascos, 95-99 tormenta
+_BAD_WEATHER_CODES = set([45, 48, 51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 71, 73, 75, 77, 80, 81, 82, 85, 86, 95, 96, 99])
+
+def _extract_weathercode(pron: Any) -> Optional[int]:
+    """
+    Intenta sacar un weathercode “diario” de distintas formas.
+    """
+    if pron is None:
+        return None
+    try:
+        # Si es dict estilo Open-Meteo:
+        if isinstance(pron, dict):
+            # daily.weathercode[0]
+            daily = pron.get("daily")
+            if isinstance(daily, dict):
+                wc = daily.get("weathercode")
+                if isinstance(wc, list) and wc:
+                    return int(wc[0])
+                if wc is not None:
+                    return int(wc)
+            # a veces viene directo
+            wc = pron.get("weathercode")
+            if isinstance(wc, list) and wc:
+                return int(wc[0])
+            if wc is not None:
+                return int(wc)
+        return None
+    except Exception:
+        return None
+
+def _extract_cloud_or_precip(pron: Any) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Devuelve (cloudcover, precip_prob) si aparecen.
+    """
+    cloud = None
+    pprob = None
+    try:
+        if isinstance(pron, dict):
+            daily = pron.get("daily")
+            if isinstance(daily, dict):
+                # Open-Meteo puede dar cloudcover_mean, precipitation_probability_max
+                cc = daily.get("cloudcover_mean") or daily.get("cloudcover")
+                if isinstance(cc, list) and cc:
+                    cloud = float(cc[0])
+                elif cc is not None:
+                    cloud = float(cc)
+
+                pp = daily.get("precipitation_probability_max") or daily.get("precipitation_probability")
+                if isinstance(pp, list) and pp:
+                    pprob = float(pp[0])
+                elif pp is not None:
+                    pprob = float(pp)
+        return cloud, pprob
+    except Exception:
+        return cloud, pprob
+
+def meteo_impide_vitd(pron: Any) -> bool:
+    """
+    Regla robusta:
+    - Si weathercode es “malo” -> True
+    - Si prob. precip alta -> True
+    - Si nubosidad media muy alta -> True (umbral conservador)
+    """
+    wc = _extract_weathercode(pron)
+    if wc is not None and wc in _BAD_WEATHER_CODES:
+        return True
+
+    cloud, pprob = _extract_cloud_or_precip(pron)
+    if pprob is not None and pprob >= 50:
+        return True
+    if cloud is not None and cloud >= 85:
+        return True
+
+    return False
+
+# -------------------- Formateo de tramos --------------------
+
+# tramo: (inicio_dt, fin_dt) o None
+Tramo = Optional[Tuple[datetime.datetime, datetime.datetime]]
+
+def _fmt_hhmm(dt: datetime.datetime) -> str:
+    return dt.strftime("%H:%M")
+
+def _tramo_to_str(label: str, tramo: Tramo) -> Optional[str]:
+    if not tramo:
+        return None
+    a, b = tramo
+    return f"{label}: {_fmt_hhmm(a)}–{_fmt_hhmm(b)}"
+
+def _tramos_a_texto_detallado(ciudad: str, tramo_m: Tramo, tramo_t: Tramo) -> str:
+    partes = [f"🌤️ Intervalos 30–40° en {ciudad}:"]
+    m = _tramo_to_str("🌅 Mañana", tramo_m)
+    t = _tramo_to_str("🌇 Tarde", tramo_t)
+    if m:
+        partes.append(m)
+    if t:
+        partes.append(t)
+    # si solo hay 1 tramo (a veces pasa), no inventamos el otro
+    return "\n".join(partes)
+
+def _hay_alguna_ventana(tramo_m: Tramo, tramo_t: Tramo) -> bool:
+    return bool(tramo_m) or bool(tramo_t)
+
+# -------------------- Consejo diario (inmune) --------------------
+
+def _consejo_del_dia(now_local: datetime.datetime) -> Tuple[str, str]:
+    """
+    Usa tu estructura consejos[dia_semana] = [texto, ref, texto, ref, ...]
+    Elige par estable por fecha (no se repite en el mismo día).
+    """
+    dia_semana = now_local.weekday()  # lunes=0
+    lista = consejos[dia_semana]
+    pares = [lista[i:i+2] for i in range(0, len(lista), 2)]
+    idx = now_local.date().toordinal() % len(pares)
+    consejo_es, ref_es = pares[idx]
+    return consejo_es, ref_es
+
+# -------------------- Envío a un usuario --------------------
+
+async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime):
+    # Filtrado opcional por chat_id
+    if ONLY_CHAT_ID and str(chat_id) != str(ONLY_CHAT_ID):
         return
 
-    # Zona horaria y fecha local
+    # Hora local del usuario
+    tzname = (prefs.get("tz") or "Europe/Madrid").strip()
     try:
-        tz = pytz.timezone(prefs.get("tz", "Europe/Madrid"))
+        tz = pytz.timezone(tzname)
     except Exception:
         tz = pytz.timezone("Europe/Madrid")
+        tzname = "Europe/Madrid"
+
     now_local = now_utc.astimezone(tz)
     hoy_local = now_local.date()
-    if prefs.get("last_sent_iso") == hoy_local.isoformat():
-        return
 
-    # Ubicación
-    lat = prefs.get("lat"); lon = prefs.get("lon")
-    tzname = prefs.get("tz"); ciudad = prefs.get("city") or "tu zona"
-    if lat is None or lon is None or not tzname:
-        if prefs.get("city"):
-            geo = geocodificar_ciudad(prefs["city"])
-            if geo:
-                lat, lon, tzname, ciudad = geo["lat"], geo["lon"], geo["tz"], geo["ciudad"]
-            else:
-                ub = obtener_ubicacion(); lat, lon, tzname, ciudad = float(ub["latitud"]), float(ub["longitud"]), ub["timezone"], ub["ciudad"]
-        else:
-            ub = obtener_ubicacion(); lat, lon, tzname, ciudad = float(ub["latitud"]), float(ub["longitud"]), ub["timezone"], ub["ciudad"]
+    # Ventana de envío:
+    # - si FORCE_SEND: se permite enviar ahora, pero igual NO duplicamos por día (mark_sent_today lo bloquea)
+    # - si no FORCE_SEND: usamos should_send_now (ventana 10 min y no enviado hoy)
+    if not FORCE_SEND:
+        if not should_send_now(prefs, now_utc=now_utc):
+            return
+    else:
+        # si ya se envió hoy, no forzamos de nuevo (evita spam cada 5 min)
+        if prefs.get("last_sent_iso") == hoy_local.isoformat():
+            return
 
-    # Consejo inmune del día (según día semana, pares [texto, ref])
-    dia_semana = now_local.weekday()
-    lista_dia = consejos[dia_semana]
-    pares = [lista_dia[i:i+2] for i in range(0, len(lista_dia), 2)]
-    if not pares:
-        return
-    consejo_es, referencia_es = pares[now_local.toordinal() % len(pares)]
+    # Ubicación: GPS > ciudad > fallback
+    lat = prefs.get("lat")
+    lon = prefs.get("lon")
+    ciudad = prefs.get("city")
+    if lat is None or lon is None:
+        ub = obtener_ubicacion()  # tu fallback
+        lat = float(ub["latitud"])
+        lon = float(ub["longitud"])
+        ciudad = ciudad or ub.get("ciudad") or "tu zona"
 
-    # Ventanas + pronóstico
-    tramo_m, tramo_t = _calc_tramos_compat(hoy_local, lat, lon, tzname)
-    pron = _pronostico_compat(lat, lon, hoy_local, tzname)
-
-    # ¿Hay impedimento para síntesis (nublado fuerte/lluvia) o no hay ventanas?
-    if _meteo_impide_sintesis(pron, tramo_m, tramo_t):
-        est = estacion_del_anio(hoy_local, lat)
-        consejo_nutri_es = _pick_nutri_tip(est, str(chat_id), hoy_local)
-        lang = prefs.get("lang", "es")
-        cuerpo = traducir(
-            f"☁️ Hoy no hay ventanas seguras de 30–40° para sintetizar vitamina D en {ciudad}.\n"
-            f"🍽️ Consejo nutricional de {est}:\n{consejo_nutri_es}",
-            lang
-        )
-        if len(cuerpo) > 4000:
-            cuerpo = cuerpo[:3990] + "…"
-
-        # Enviar al usuario
-        await bot.send_message(chat_id=chat_id, text=cuerpo)
-        mark_sent_today(chat_id, hoy_local)
-
-        # Publicar UNA VEZ por ciclo en el canal (si está definido)
-        if CANAL_CHAT_ID and not context_flags.get("posted_channel_diurno", False):
-            try:
-                pub = f"🔔 Consejo público:\n{cuerpo}"
-                if len(pub) > 3800:
-                    pub = pub[:3790] + "…"
-                await bot.send_message(chat_id=CANAL_CHAT_ID, text=pub)
-                context_flags["posted_channel_diurno"] = True
-            except Exception as e:
-                print(f"[WARN] No pude publicar en canal (diurno, nublado): {e}")
-        return  # importante: no seguir con bloque solar
-
-    # Si hay Sol: mensaje inmune normal con tramos (y meteo opcional)
-    bloque_tramos = _tramos_a_texto_detallado(ciudad, tramo_m, tramo_t)
-    if SHOW_FORMATO_METEO:
-        try:
-            extra = formatear_intervalos_meteo(tramo_m, tramo_t, ciudad, pron)
-        except TypeError:
-            try:
-                extra = formatear_intervalos_meteo(tramo_m, tramo_t, ciudad)
-            except Exception:
-                extra = None
-        if extra and isinstance(extra, str):
-            bloque_tramos += f"\n({extra})"
-
+    # Idioma
     lang = prefs.get("lang", "es")
-    cuerpo = f"{consejo_es}\n\n{referencia_es}\n\n{bloque_tramos}"
-    cuerpo = traducir(cuerpo, lang) or cuerpo
+
+    # 1) Calcular intervalos 30–40°
+    #    (Se asume que tu calcular_intervalos_optimos ya devuelve (tramo_m, tramo_t) en hora local)
+    tramo_m: Tramo = None
+    tramo_t: Tramo = None
+    try:
+        tramo_m, tramo_t = calcular_intervalos_optimos(hoy_local, float(lat), float(lon), tzname)
+    except Exception as e:
+        print(f"[WARN] calcular_intervalos_optimos falló: {e}")
+        tramo_m, tramo_t = None, None
+
+    hay_tramos = _hay_alguna_ventana(tramo_m, tramo_t)
+
+    # 2) Meteo (para decidir si “impide” vit D)
+    pron = None
+    try:
+        pron = obtener_pronostico_diario(float(lat), float(lon), hoy_local, tzname)
+    except Exception as e:
+        print(f"[WARN] obtener_pronostico_diario falló: {e}")
+        pron = None
+
+    meteo_mala = meteo_impide_vitd(pron)
+
+    # 3) Construir bloque solar según casos
+    # Caso A: NO hay tramos -> el Sol no llega a 30° (latitud/estación)
+    # Caso B: hay tramos, pero meteo mala -> mostrar horas 30–40 como teóricas
+    # Caso C: hay tramos y meteo OK -> mostrar horas 30–40 normales
+    if not hay_tramos:
+        texto_solar_es = (
+            f"☁️ En tu latitud hoy no podrás producir vitamina D: "
+            f"el Sol no subirá por encima de 30° sobre el horizonte en {ciudad}."
+        )
+        # Como no hay 30–40°, no podemos listarlos.
+        est = estacion_del_anio(hoy_local, float(lat))
+        nutri_es = _pick_nutri_tip(est, str(chat_id), hoy_local)
+        bloque_extra_es = f"🍽️ Consejo nutricional de {est}:\n{nutri_es}"
+
+    elif meteo_mala:
+        # ✅ Tu petición: aunque hoy no sea aprovechable por meteo, damos las horas 30–40°
+        tramos_txt = _tramos_a_texto_detallado(ciudad, tramo_m, tramo_t)
+        texto_solar_es = (
+            "☁️ Hoy no se espera una ventana útil de sol para sintetizar vitamina D por las condiciones meteorológicas.\n"
+            "📌 Aun así, estas son las horas en las que el Sol estará entre 30° y 40° sobre el horizonte (si el cielo estuviera despejado):\n\n"
+            f"{tramos_txt}"
+        )
+        est = estacion_del_anio(hoy_local, float(lat))
+        nutri_es = _pick_nutri_tip(est, str(chat_id), hoy_local)
+        bloque_extra_es = f"🍽️ Consejo nutricional de {est}:\n{nutri_es}"
+
+    else:
+        # Caso C: hay tramos y meteo OK
+        tramos_txt = _tramos_a_texto_detallado(ciudad, tramo_m, tramo_t)
+        texto_solar_es = (
+            "🌞 Intervalos solares seguros para producir vit. D (30–40°):\n\n"
+            f"{tramos_txt}"
+        )
+        bloque_extra_es = ""  # no metemos nutricional salvo que quieras (ahora lo dejamos limpio)
+
+    # 4) Consejo inmune del día + referencia
+    consejo_es, ref_es = _consejo_del_dia(now_local)
+    dia_nombre_es = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"][now_local.weekday()]
+
+    cuerpo_es = (
+        f"🧠 Consejo para hoy ({dia_nombre_es}):\n{consejo_es}\n\n"
+        f"📚 *Referencia:* {ref_es}\n\n"
+        f"{texto_solar_es}"
+    )
+    if bloque_extra_es:
+        cuerpo_es += "\n\n" + bloque_extra_es
+
+    cuerpo = traducir(cuerpo_es, lang) or cuerpo_es
     if len(cuerpo) > 4000:
         cuerpo = cuerpo[:3990] + "…"
 
-    # Enviar al usuario
+    # Ping opcional (solo si lo activas)
+    if PING_ON_START:
+        try:
+            await bot.send_message(chat_id=chat_id, text="✅ Ping de diagnóstico (PING_ON_START activo).")
+        except Exception as e:
+            print(f"[WARN] Ping falló: {e}")
+
+    # 5) Enviar a usuario
     await bot.send_message(chat_id=chat_id, text=cuerpo)
+
+    # 6) Marcar enviado hoy (para no repetir)
     mark_sent_today(chat_id, hoy_local)
 
-    # Publicar UNA VEZ por ciclo en el canal (si está definido)
-    if CANAL_CHAT_ID and not context_flags.get("posted_channel_diurno", False):
+    # 7) Opcional: publicar también en canal
+    if CANAL_CHAT_ID:
         try:
             pub = f"🔔 Consejo público:\n{cuerpo}"
             if len(pub) > 3800:
                 pub = pub[:3790] + "…"
             await bot.send_message(chat_id=CANAL_CHAT_ID, text=pub)
-            context_flags["posted_channel_diurno"] = True
         except Exception as e:
-            print(f"[WARN] No pude publicar en canal (diurno, soleado): {e}")
+            print(f"[WARN] No pude publicar en canal: {e}")
 
-# ========== Envío NOCTURNO ==========
-async def enviar_nocturno(bot: Bot, chat_id: str, prefs: dict, now_utc: datetime.datetime, context_flags: dict):
-    if not FORCE_SEND and not should_send_sleep_now(prefs, now_utc=now_utc):
-        return
+# -------------------- Main (cron) --------------------
 
-    try:
-        tz = pytz.timezone(prefs.get("tz", "Europe/Madrid"))
-    except Exception:
-        tz = pytz.timezone("Europe/Madrid")
-    now_local = now_utc.astimezone(tz)
-    hoy_local = now_local.date()
-    if prefs.get("last_sleep_sent_iso") == hoy_local.isoformat():
-        return
-
-    lang = prefs.get("lang", "es")
-    consejo_txt = sugerir_para_noche(lang=lang)             # ya sale traducido si pasamos lang
-    mensaje = formatear_consejo(consejo_txt, lang=lang)     # encabezado traducido
-
-    if len(mensaje) > 4000:
-        mensaje = mensaje[:3990] + "…"
-
-    # Enviar al usuario
-    await bot.send_message(chat_id=chat_id, text=mensaje)
-    mark_sleep_sent_today(chat_id, hoy_local)
-
-    # Publicar UNA VEZ por ciclo en el canal (si está definido)
-    if CANAL_CHAT_ID and not context_flags.get("posted_channel_nocturno", False):
-        try:
-            pub = f"🌙 Consejo para dormir (público):\n{mensaje}"
-            if len(pub) > 3800:
-                pub = pub[:3790] + "…"
-            await bot.send_message(chat_id=CANAL_CHAT_ID, text=pub)
-            context_flags["posted_channel_nocturno"] = True
-        except Exception as e:
-            print(f"[WARN] No pude publicar en canal (nocturno): {e}")
-
-# ========== Main ==========
 async def main():
     if not BOT_TOKEN:
-        raise RuntimeError("❌ Faltan variables de entorno: BOT_TOKEN")
-
-    try: init_db()
-    except Exception as e: print(f"[WARN] init_db: {e}")
-    try: migrate_fill_defaults()
-    except Exception as e: print(f"[WARN] migrate_fill_defaults: {e}")
-
-    bot = Bot(token=BOT_TOKEN)
-
-    if PING_ON_START and ONLY_CHAT_ID:
-        try:
-            await bot.send_message(chat_id=ONLY_CHAT_ID, text="✅ Ping de diagnóstico (PING_ON_START).")
-        except Exception as e:
-            print(f"[ERR] PING FAILED: {e}")
+        raise RuntimeError("❌ Falta BOT_TOKEN en Variables de Railway.")
+    init_db()
 
     users = list_users()
     if not users:
         print("ℹ️ No hay suscriptores aún.")
         return
 
+    bot = Bot(token=BOT_TOKEN)
     now_utc = datetime.datetime.now(datetime.timezone.utc)
-    intentos_diurnos = 0
-    intentos_nocturnos = 0
 
-    # Flags compartidos del ciclo para publicar en canal solo una vez por tipo
-    context_flags = {"posted_channel_diurno": False, "posted_channel_nocturno": False}
+    procesados = 0
+    intentos = 0
+    errores = 0
 
     for uid, prefs in users.items():
-        if ONLY_CHAT_ID and uid != ONLY_CHAT_ID:
-            continue
+        procesados += 1
         try:
-            await enviar_diurno(bot, uid, prefs, now_utc, context_flags=context_flags); intentos_diurnos += 1
+            before_last = prefs.get("last_sent_iso")
+            await enviar_a_usuario(bot, uid, prefs, now_utc)
+            # si cambió last_sent_iso en DB, cuenta como intento real
+            # (no lo leemos aquí otra vez para no recargar; lo dejamos como “intento potencial”)
+            intentos += 1
         except Exception as e:
-            print(f"❌ Error diurno {uid}: {e}")
-        try:
-            await enviar_nocturno(bot, uid, prefs, now_utc, context_flags=context_flags); intentos_nocturnos += 1
-        except Exception as e:
-            print(f"❌ Error nocturno {uid}: {e}")
+            errores += 1
+            print(f"❌ Error enviando a {uid}: {e}")
 
-    print(f"✅ Ciclo cron OK. Usuarios: {len(users)} | Intentos diurnos: {intentos_diurnos} | Nocturnos: {intentos_nocturnos}")
+    print(f"✅ Ciclo cron OK. Usuarios procesados: {procesados}. Intentos: {intentos}. Errores: {errores}. FORCE_SEND={FORCE_SEND}")
 
 if __name__ == "__main__":
     asyncio.run(main())
