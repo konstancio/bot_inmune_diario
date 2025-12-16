@@ -19,7 +19,8 @@ from ubicacion_y_sol import (
     calcular_intervalos_optimos,
     obtener_pronostico_diario,
 )
-
+ 
+from solar_repo import init_solar_history, upsert_solar_history
 # ================= ENV =================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -181,6 +182,7 @@ async def main():
         raise RuntimeError("Falta BOT_TOKEN")
 
     init_db()
+    init_solar_history()
     users = list_users()
     if not users:
         return
