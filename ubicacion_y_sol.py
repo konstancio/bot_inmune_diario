@@ -124,11 +124,12 @@ def calcular_intervalos_optimos(
     lon: float,
     fecha: dt.date,
     tzname: str,
-    paso_min: int = 3,
+    paso_min: int = 1,  # 👈 antes 3; ahora 1 para no perder ventanas cortas
 ) -> Tuple[Optional[Tuple[dt.datetime, dt.datetime]], Optional[Tuple[dt.datetime, dt.datetime]]]:
     """
     Recorre el día a 'paso_min' y devuelve dos tramos (mañana/tarde)
-    con elevación entre 30 y 40 grados. Datetimes tz-aware.
+    con elevación entre 30 y 40 grados (INCLUSIVO).
+    Mejora: interpola cruces para no “perder” ventanas cortas.
     """
     tz = pytz.timezone(tzname)
     n = fecha.timetuple().tm_yday
@@ -143,33 +144,60 @@ def calcular_intervalos_optimos(
         elev = _elevacion_solar_deg(lat, decl, h_angle)
         puntos.append((t, elev))
 
-    # Detectar tramos [30,40]
+    def in_band(e: float) -> bool:
+        # ✅ 30° cuenta, 40° cuenta
+        return 30.0 <= e <= 40.0
+
+    def interp_time(t1: dt.datetime, e1: float, t2: dt.datetime, e2: float, target: float) -> dt.datetime:
+        """
+        Interpolación lineal simple del instante en que e cruza 'target'
+        entre (t1,e1) y (t2,e2). Si algo va raro, devuelve t2.
+        """
+        try:
+            if e2 == e1:
+                return t2
+            frac = (target - e1) / (e2 - e1)
+            frac = max(0.0, min(1.0, frac))
+            return t1 + (t2 - t1) * frac
+        except Exception:
+            return t2
+
+    # Detectar tramos [30,40] con ajuste de bordes por interpolación
     tramos: List[Tuple[dt.datetime, dt.datetime]] = []
     en = False
     ini: Optional[dt.datetime] = None
 
-    def _clamp40(a: float) -> float:
-        # si quieres cortar exactamente en 30/40 podrías interpolar;
-        # para simplicidad usamos bordes discretos
-        return a
+    for i in range(1, len(puntos)):
+        t_prev, e_prev = puntos[i - 1]
+        t, e = puntos[i]
 
-    for i, (t, e) in enumerate(puntos):
-        if 30.0 <= e <= 40.0:
-            if not en:
-                ini = t
-                en = True
-        else:
-            if en:
-                fin = puntos[i - 1][0]
-                tramos.append((ini, fin))  # type: ignore
-                en = False
-    if en:
-        tramos.append((ini, puntos[-1][0]))  # type: ignore
+        prev_in = in_band(e_prev)
+        curr_in = in_band(e)
+
+        # Entrando al rango
+        if (not prev_in) and curr_in:
+            # puede entrar por 30 o por 40 (si venía >40 y baja)
+            target = 30.0 if e_prev < 30.0 else 40.0
+            ini = interp_time(t_prev, e_prev, t, e, target)
+            en = True
+
+        # Saliendo del rango
+        elif prev_in and (not curr_in) and en and ini is not None:
+            target = 30.0 if e < 30.0 else 40.0
+            fin = interp_time(t_prev, e_prev, t, e, target)
+            tramos.append((ini, fin))
+            en = False
+            ini = None
+
+    # Si termina el día dentro del rango
+    if en and ini is not None:
+        tramos.append((ini, puntos[-1][0]))
 
     # Separar antes/después del mediodía local
     mediodia = tz.localize(dt.datetime(fecha.year, fecha.month, fecha.day, 12, 0))
     tramo_m = next(((a, b) for a, b in tramos if b <= mediodia), None)
     tramo_t = next(((a, b) for a, b in tramos if a > mediodia), None)
+
     return tramo_m, tramo_t
 
 
