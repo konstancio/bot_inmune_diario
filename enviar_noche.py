@@ -20,8 +20,8 @@ ONLY_CHAT_ID = os.getenv("ONLY_CHAT_ID")
 
 
 def elegir_consejo(chat_id: str, fecha: dt.date) -> str:
-    idx = (hash(chat_id) + fecha.toordinal()) % len(CONSEJOS_PARASIMPATICOS)
-    return CONSEJOS_PARASIMPATICOS[idx]
+    idx = (hash(chat_id) + fecha.toordinal()) % len(CONSEJOS_PARASIMPATICO)
+    return CONSEJOS_PARASIMPATICO[idx]
 
 
 async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: dt.datetime):
