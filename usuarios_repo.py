@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 import os
-import re
 from datetime import datetime, date, timezone
 from typing import Dict, Any, Optional
 
@@ -17,7 +16,7 @@ VALID_LANG = {"es", "en", "fr", "it", "de", "pt", "nl", "sr", "ru"}
 # alias de entrada -> código canónico
 _LANG_ALIAS = {
     "sh": "sr", "sc": "sr", "srp": "sr", "hr": "sr", "bs": "sr",  # serbio como proxy
-    "pt-br": "pt"
+    "pt-br": "pt",
 }
 
 # ------------------ conexión ------------------
@@ -34,74 +33,54 @@ def init_db() -> None:
     """Crea tablas si no existen y añade columnas nuevas si faltan (idempotente)."""
     sql = """
     CREATE TABLE IF NOT EXISTS subscribers (
-        chat_id         TEXT PRIMARY KEY,
-        lang            TEXT NOT NULL DEFAULT 'es',
-        city            TEXT,
-        lat             DOUBLE PRECISION,
-        lon             DOUBLE PRECISION,
-        tz              TEXT NOT NULL DEFAULT 'Europe/Madrid',
-        last_sent_iso   TEXT,
-        last_sent_night_iso TEXT,
-        send_hour_local INTEGER NOT NULL DEFAULT 9,
-        -- nuevos campos para envío nocturno
-        last_sleep_sent_iso TEXT,
-        sleep_hour_local    INTEGER NOT NULL DEFAULT 21,
-        created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+        chat_id              TEXT PRIMARY KEY,
+        lang                 TEXT NOT NULL DEFAULT 'es',
+        city                 TEXT,
+        lat                  DOUBLE PRECISION,
+        lon                  DOUBLE PRECISION,
+        tz                   TEXT NOT NULL DEFAULT 'Europe/Madrid',
+
+        -- envío diurno
+        last_sent_iso        TEXT,
+        send_hour_local      INTEGER NOT NULL DEFAULT 9,
+
+        -- envío nocturno (parasimpático)
+        last_sleep_sent_iso  TEXT,
+        sleep_hour_local     INTEGER NOT NULL DEFAULT 21,
+
+        created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_subs_tz ON subscribers (tz);
     """
     with _get_conn() as conn, conn.cursor() as cur:
         cur.execute(sql)
-        # Por si la tabla ya existía sin las columnas nuevas (Railway antiguas):
+
+        # Por si existían tablas antiguas sin estas columnas:
         cur.execute("ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS last_sleep_sent_iso TEXT;")
         cur.execute("ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS sleep_hour_local INTEGER;")
+        cur.execute("ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS last_sent_iso TEXT;")
+        cur.execute("ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS send_hour_local INTEGER;")
+        cur.execute("ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;")
+        cur.execute("ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;")
+
+        # Defaults para filas antiguas
         cur.execute("UPDATE subscribers SET sleep_hour_local = COALESCE(sleep_hour_local, 21);")
+        cur.execute("UPDATE subscribers SET send_hour_local = COALESCE(send_hour_local, 9);")
+        cur.execute("UPDATE subscribers SET updated_at = COALESCE(updated_at, now());")
+        cur.execute("UPDATE subscribers SET created_at = COALESCE(created_at, now());")
 
 def migrate_fill_defaults() -> None:
-    """
-    Migración suave:
-    - Rellena valores por defecto en filas existentes (incluye nocturno).
-    - No altera el esquema más allá de valores.
-    """
+    """Rellena valores por defecto en filas existentes (suave)."""
     try:
         with _get_conn() as conn, conn.cursor() as cur:
-            cur.execute("""
-                UPDATE subscribers
-                   SET lang='es'
-                 WHERE lang IS NULL OR lang=''
-            """)
-            cur.execute("""
-                UPDATE subscribers
-                   SET tz='Europe/Madrid'
-                 WHERE tz IS NULL OR tz=''
-            """)
-            cur.execute("""
-                UPDATE subscribers
-                   SET send_hour_local=9
-                 WHERE send_hour_local IS NULL
-            """)
-            cur.execute("""
-                UPDATE subscribers
-                   SET sleep_hour_local=21
-                 WHERE sleep_hour_local IS NULL
-            """)
-            cur.execute("""
-                UPDATE subscribers
-                   SET updated_at=now()
-                 WHERE updated_at IS NULL
-            """)
+            cur.execute("UPDATE subscribers SET lang='es' WHERE lang IS NULL OR lang=''")
+            cur.execute("UPDATE subscribers SET tz='Europe/Madrid' WHERE tz IS NULL OR tz=''")
+            cur.execute("UPDATE subscribers SET send_hour_local=9 WHERE send_hour_local IS NULL")
+            cur.execute("UPDATE subscribers SET sleep_hour_local=21 WHERE sleep_hour_local IS NULL")
+            cur.execute("UPDATE subscribers SET updated_at=now() WHERE updated_at IS NULL")
     except Exception as e:
         print(f"[WARN] migrate_fill_defaults: {e}")
-
-def _row_to_dict(row) -> dict:
-    if not row:
-        return {}
-    if isinstance(row, dict):
-        return dict(row)
-    if hasattr(row, "keys"):
-        return dict(row)
-    return dict(row)
 
 # ------------------ CRUD básico ------------------
 
@@ -111,10 +90,12 @@ def ensure_user(chat_id: str) -> dict:
         row = cur.fetchone()
         if row:
             return dict(row)
+
         cur.execute("""
             INSERT INTO subscribers (chat_id) VALUES (%s)
             ON CONFLICT (chat_id) DO NOTHING
         """, (str(chat_id),))
+
         cur.execute("SELECT * FROM subscribers WHERE chat_id=%s", (str(chat_id),))
         return dict(cur.fetchone())
 
@@ -135,7 +116,7 @@ def unsubscribe(chat_id: str) -> None:
 
 def set_lang(chat_id: str, lang: str) -> bool:
     lang = (lang or "").strip().lower()
-    lang = _LANG_ALIAS.get(lang, lang)  # normalizamos alias
+    lang = _LANG_ALIAS.get(lang, lang)
     if lang not in VALID_LANG:
         return False
     with _get_conn() as conn, conn.cursor() as cur:
@@ -170,7 +151,7 @@ def set_send_hour(chat_id: str, hour_local: int) -> None:
         """, (hour_local, str(chat_id)))
 
 def set_sleep_hour(chat_id: str, hour_local: int) -> None:
-    """Nueva: hora local del consejo parasimpático (por defecto 21)."""
+    """Hora local del consejo parasimpático (por defecto 21)."""
     try:
         hour_local = int(hour_local)
     except Exception:
@@ -181,7 +162,7 @@ def set_sleep_hour(chat_id: str, hour_local: int) -> None:
             UPDATE subscribers SET sleep_hour_local=%s, updated_at=now() WHERE chat_id=%s
         """, (hour_local, str(chat_id)))
 
-# ------------------ Control de envío diario ------------------
+# ------------------ Control de envío (diurno / nocturno) ------------------
 
 def mark_sent_today(chat_id: str, local_date: date) -> None:
     with _get_conn() as conn, conn.cursor() as cur:
@@ -195,90 +176,58 @@ def mark_sleep_sent_today(chat_id: str, local_date: date) -> None:
             UPDATE subscribers SET last_sleep_sent_iso=%s, updated_at=now() WHERE chat_id=%s
         """, (local_date.isoformat(), str(chat_id)))
 
-def _should_send_generic(chat: dict, target_hour_key: str, last_key: str, now_utc: Optional[datetime] = None) -> bool:
+def _should_send_generic(
+    chat: dict,
+    hour_key: str,
+    last_key: str,
+    now_utc: Optional[datetime] = None,
+    window_minutes: int = 10,
+) -> bool:
     tzname = (chat.get("tz") or "Europe/Madrid").strip()
-    hour = int(chat.get(target_hour_key, 9))
+    hour = int(chat.get(hour_key, 9))
+
     if now_utc is None:
         now_utc = datetime.now(timezone.utc)
+
     try:
         tz = pytz.timezone(tzname)
     except Exception:
         tz = pytz.timezone("Europe/Madrid")
+
     now_local = now_utc.astimezone(tz)
     local_date = now_local.date()
-    last_iso = chat.get(last_key)
-    already = (last_iso == local_date.isoformat())
-    in_window = (now_local.hour == hour and 0 <= now_local.minute < 10)
+
+    already = (chat.get(last_key) == local_date.isoformat())
+    in_window = (now_local.hour == hour and 0 <= now_local.minute < window_minutes)
+
     return in_window and not already
 
 def should_send_now(chat: dict, now_utc: Optional[datetime] = None) -> bool:
     """
-    Cron cada 5 min:
-      - Convierte now_utc a hora local del usuario (chat["tz"])
-      - Envía si: local_hour == send_hour_local y 0<=min<30 (ventana 30 min)
-      - Y si aún no se envió hoy (comparando fecha local con last_sent_iso)
+    Envío diurno (por defecto 9:00).
+    Ventana 30 min: 0<=min<30.
     """
-    tzname = (chat.get("tz") or "Europe/Madrid").strip()
-    send_hour = int(chat.get("send_hour_local", 9))
-
-    if now_utc is None:
-        now_utc = datetime.now(timezone.utc)
-    try:
-        tz = pytz.timezone(tzname)
-    except Exception:
-        tz = pytz.timezone("Europe/Madrid")
-        tzname = "Europe/Madrid"
-
-    now_local = now_utc.astimezone(tz)
-    local_date = now_local.date()
-    last_sent_iso = chat.get("last_sent_iso")
-    already_sent_today = (last_sent_iso == local_date.isoformat())
-
-    # ⬇️ margen de 30 min para que el cron no “se lo salte”
-    in_window = (now_local.hour == send_hour and 0 <= now_local.minute < 30)
-
-    return in_window and not already_sent_today
+    return _should_send_generic(chat, "send_hour_local", "last_sent_iso", now_utc, window_minutes=30)
 
 def should_send_sleep_now(chat: dict, now_utc: Optional[datetime] = None) -> bool:
-    """Consejo parasimpático nocturno (21:00 por defecto)."""
-    return _should_send_generic(chat, "sleep_hour_local", "last_sleep_sent_iso", now_utc)
+    """
+    Envío nocturno parasimpático (por defecto 21:00).
+    Ventana 10 min: 0<=min<10.
+    """
+    return _should_send_generic(chat, "sleep_hour_local", "last_sleep_sent_iso", now_utc, window_minutes=10)
 
-# --------- Utilidad: obtener “tu” usuario (por chat_id) ---------
+# ---------- Compatibilidad hacia atrás (por si algún script importa “night”) ----------
+
+def should_send_night(chat: dict, now_utc: Optional[datetime] = None) -> bool:
+    return should_send_sleep_now(chat, now_utc)
+
+def mark_sent_night(chat_id: str, local_date: date) -> None:
+    return mark_sleep_sent_today(chat_id, local_date)
+
+# --------- Utilidad: obtener usuario ---------
 
 def get_user(chat_id: str) -> dict:
     with _get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("SELECT * FROM subscribers WHERE chat_id=%s", (str(chat_id),))
         row = cur.fetchone()
         return dict(row) if row else {}
-
-def mark_sent_night(chat_id: str, local_date: date) -> None:
-    with _get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""
-            UPDATE subscribers
-            SET last_sent_night_iso=%s, update_at=now()
-            WHERE chat_id=%s
-        """, (local_date.isoformat(), str(chat_id)))
-
-def should_send_night(chat: dict, now_utc: datetime= None) -> bool:
-    """
-    Envío nocturno:
-    - Hora fija 21:00 local
-    - Ventana 20:55-21:05
-    - No repetir si ya se envió hoy
-    """
-    if now_utc is None:
-        now_utc = datetime.now(timezone.utc)
-
-    tzname = chat.get("tz") or "Europe/Madrid"
-    try:
-        tz = pytz.timezone(tzname)
-    except Exception:
-        tz = pytz.timezone("Europe/Madrid")
-
-    now_local = now_utc.astimezone(tz)
-    hoy = now_local.date()
-
-    already = chat.get("last_sent_night_iso") == hoy.isoformat()
-    in_window = now_local.hour == 21 and 0 <= now_local.minute < 10
-
-    return in_window and not already
