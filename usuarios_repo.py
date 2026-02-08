@@ -41,6 +41,7 @@ def init_db() -> None:
         lon             DOUBLE PRECISION,
         tz              TEXT NOT NULL DEFAULT 'Europe/Madrid',
         last_sent_iso   TEXT,
+        last_sent_night_iso TEXT,
         send_hour_local INTEGER NOT NULL DEFAULT 9,
         -- nuevos campos para envío nocturno
         last_sleep_sent_iso TEXT,
@@ -249,3 +250,35 @@ def get_user(chat_id: str) -> dict:
         cur.execute("SELECT * FROM subscribers WHERE chat_id=%s", (str(chat_id),))
         row = cur.fetchone()
         return dict(row) if row else {}
+
+def mark_sent_night(chat_id: str, local_date: date) -> None:
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            UPDATE subscribers
+            SET last_sent_night_iso=%s, update_at=now()
+            WHERE chat_id=%s
+        """, (local_date.isoformat(), str(chat_id)))
+
+def should_send_night(chat: dict, now_utc: datetime= None) -> bool:
+    """
+    Envío nocturno:
+    - Hora fija 21:00 local
+    - Ventana 20:55-21:05
+    - No repetir si ya se envió hoy
+    """
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+
+    tzname = chat.get("tz") or "Europe/Madrid"
+    try:
+        tz = pytz.timezone(tzname)
+    except Exception:
+        tz = pytz.timezone("Europe/Madrid")
+
+    now_local = now_utc.astimezone(tz)
+    hoy = now_local.date()
+
+    already = chat.get("last_sent_night_iso") == hoy.isoformat()
+    in_window = now_local.hour == 21 and 0 <= now_local.minute < 10
+
+    return in_window and not already
