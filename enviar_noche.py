@@ -13,7 +13,7 @@ from usuarios_repo import (
     mark_sent_night,
 )
 
-from consejos_parasimpaticos import CONSEJOS_PARASIMPATICOS
+from consejos_parasimpatico import CONSEJOS_PARASIMPATICOS
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ONLY_CHAT_ID = os.getenv("ONLY_CHAT_ID")
