@@ -1,27 +1,10 @@
-# enviar_consejo.py — CRON diario multiusuario (PRO)
-# Vitamina D (30–40°) + mediodía solar + meteo + nutrición por estación + traducción
-#
-# - Envía a cada usuario a su hora local (por defecto 9) sin duplicar por día
-# - Calcula tramos seguros 30–40° (mañana/tarde), INCLUSIVO (30 cuenta)
-# - Añade 🧭 mediodía solar (cuando el Sol está más alto, no “las 12 del reloj”)
-# - Si NO hay tramos (Sol <30°) -> mensaje “astronómico” (no llega por latitud/estación)
-# - Si SÍ hay tramos pero la meteo lo impide -> muestra igualmente los tramos “teóricos” + nutri
-# - Si SÍ hay tramos y la meteo es OK -> muestra tramos “reales” (según astron.) + sin nutri extra
-#
-# Variables de entorno (Railway):
-#   BOT_TOKEN        (obligatoria)
-#   DATABASE_DSN     (obligatoria, la usa usuarios_repo.py)  o  DATABASE_URL
-#   FORCE_SEND=1     (opcional: envía aunque no sea la hora; NO duplica en el día)
-#   ONLY_CHAT_ID=... (opcional: procesa solo ese chat_id)
-#   PING_ON_START=1  (opcional: manda ping de diagnóstico al usuario)
-#   CANAL_CHAT_ID=.. (opcional: publica también en un canal)
-#
-# Requiere: python-telegram-bot==21.4, deep-translator, pytz
+# enviar_consejo.py — CRON diario multiusuario
+# Vitamina D (30–40°), meteo, nutrición por estación y traducción
 
 import os
 import asyncio
 import datetime as dt
-from typing import Optional, Tuple
+from typing import Optional
 
 import pytz
 from telegram import Bot
@@ -35,38 +18,33 @@ from ubicacion_y_sol import (
     obtener_ubicacion,
     calcular_intervalos_optimos,
     obtener_pronostico_diario,
-    calcular_mediodia_solar,
+    obtener_mediodia_solar_y_altura_max,
+    describir_intervalos_con_mediodia,
+    formatear_intervalos_meteo,
 )
 
 # ================= ENV =================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-FORCE_SEND = os.getenv("FORCE_SEND", "0").strip() == "1"
+FORCE_SEND = os.getenv("FORCE_SEND", "0") == "1"
 ONLY_CHAT_ID = os.getenv("ONLY_CHAT_ID")
-PING_ON_START = os.getenv("PING_ON_START", "0").strip() == "1"
-CANAL_CHAT_ID = os.getenv("CANAL_CHAT_ID")  # opcional
-
-# Nota: DATABASE_DSN/DATABASE_URL se usan dentro de usuarios_repo.py. Aquí no se leen.
+PING_ON_START = os.getenv("PING_ON_START", "0") == "1"
+CANAL_CHAT_ID = os.getenv("CANAL_CHAT_ID")
 
 # ================= Idiomas =================
 
 VALID_LANG = {"es", "en", "fr", "it", "de", "pt", "nl", "sr", "ru"}
 
 _LANG_ALIAS = {
-    # serbio como proxy para croata/bosnio (+ códigos antiguos)
     "sh": "sr", "sc": "sr", "srp": "sr", "hr": "sr", "bs": "sr",
-    # variantes comunes
     "pt-br": "pt",
-    "es-es": "es",
-    "en-us": "en",
-    "en-gb": "en",
+    "es-es": "es", "en-us": "en", "en-gb": "en",
 }
 
 def _norm_lang(code: Optional[str]) -> str:
     if not code:
         return "es"
-    code = code.strip().lower()
-    code = _LANG_ALIAS.get(code, code)
+    code = _LANG_ALIAS.get(code.lower(), code.lower())
     return code if code in VALID_LANG else "es"
 
 def traducir(texto: str, lang: Optional[str]) -> str:
@@ -75,11 +53,10 @@ def traducir(texto: str, lang: Optional[str]) -> str:
         return texto
     try:
         return LibreTranslator(source="es", target=dest).translate(texto)
-    except Exception as e:
-        print(f"⚠️ Traducción fallida ({dest}): {e}")
+    except Exception:
         return texto
 
-# ================= Estación (simple y robusta) =================
+# ================= Estación =================
 
 def estacion_del_anio(fecha: dt.date, lat: float) -> str:
     m = fecha.month
@@ -101,241 +78,148 @@ def pick_nutri(est: str, chat_id: str, fecha: dt.date) -> str:
         return "Prioriza alimentos reales y, si procede, alimentos fortificados en vitamina D."
     if isinstance(ops, str):
         return ops
-    ops = list(ops)
-    if not ops:
-        return "Prioriza alimentos reales y, si procede, alimentos fortificados en vitamina D."
-    idx = (hash(str(chat_id)) + fecha.toordinal()) % len(ops)
+    idx = (hash(chat_id) + fecha.toordinal()) % len(ops)
     return ops[idx]
 
 # ================= Consejo diario =================
 
-def consejo_del_dia(now_local: dt.datetime) -> Tuple[str, str]:
-    """
-    consejos[dia_semana] = [texto, ref, texto, ref, ...]
-    Elegimos 1 par estable por fecha local.
-    """
+def consejo_del_dia(now_local: dt.datetime):
     lista = consejos[now_local.weekday()]
     pares = [lista[i:i+2] for i in range(0, len(lista), 2)]
     idx = now_local.date().toordinal() % len(pares)
-    consejo, ref = pares[idx]
-    return consejo, ref
-
-# ================= Meteo: regla “simple pero útil” =================
-# (mantengo tu criterio actual: si cloudcover horaria alcanza >=85% lo consideramos “mala”)
-
-def meteo_mala_por_nubes(pron: Optional[dict]) -> bool:
-    if not pron:
-        return False
-    clouds = pron.get("cloudcover")
-    if not clouds:
-        return False
-    try:
-        return max(clouds) >= 85
-    except Exception:
-        return False
-
-# ================= Formato solar “pro” =================
-
-Tramo = Optional[Tuple[dt.datetime, dt.datetime]]
-
-def _fmt_hhmm(x: dt.datetime) -> str:
-    return x.strftime("%H:%M")
-
-def _bloque_ventanas(ciudad: str, tramo_m: Tramo, tramo_t: Tramo) -> str:
-    """
-    Devuelve líneas con ventanas mañana/tarde si existen.
-    """
-    lineas = [f"🌤️ Ventanas 30–40° en {ciudad}:"]
-    if tramo_m:
-        lineas.append(f"🌅 Mañana: {_fmt_hhmm(tramo_m[0])}–{_fmt_hhmm(tramo_m[1])}")
-    if tramo_t:
-        lineas.append(f"🌇 Tarde: {_fmt_hhmm(tramo_t[0])}–{_fmt_hhmm(tramo_t[1])}")
-    return "\n".join(lineas)
-
-def _linea_mediodia_solar(fecha: dt.date, lon: float, tzname: str) -> str:
-    """
-    Línea divulgativa: mediodía solar (máxima altura del Sol).
-    """
-    try:
-        ms = calcular_mediodia_solar(fecha, lon, tzname)
-        return f"🧭 Mediodía solar: {ms.strftime('%H:%M')} (máxima altura del Sol)"
-    except Exception:
-        return ""
+    return pares[idx]
 
 # ================= Envío =================
 
 async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: dt.datetime):
 
-    # Filtrado opcional
     if ONLY_CHAT_ID and str(chat_id) != str(ONLY_CHAT_ID):
         return
 
-    # TZ
-    tzname = (prefs.get("tz") or "Europe/Madrid").strip()
-    try:
-        tz = pytz.timezone(tzname)
-    except Exception:
-        tz = pytz.timezone("Europe/Madrid")
-        tzname = "Europe/Madrid"
-
+    tzname = prefs.get("tz") or "Europe/Madrid"
+    tz = pytz.timezone(tzname)
     now_local = now_utc.astimezone(tz)
     hoy = now_local.date()
 
-    # Ventana de envío:
-    if not FORCE_SEND:
-        if not should_send_now(prefs, now_utc):
-            return
-    else:
-        # FORCE_SEND sin spam: respeta “no duplicado por día”
-        if prefs.get("last_sent_iso") == hoy.isoformat():
-            return
+    if not FORCE_SEND and not should_send_now(prefs, now_utc):
+        return
+    if FORCE_SEND and prefs.get("last_sent_iso") == hoy.isoformat():
+        return
 
-    # Ubicación: preferimos coords guardadas. Si faltan -> obtener_ubicacion (fallback Málaga)
     lat = prefs.get("lat")
     lon = prefs.get("lon")
-    ciudad = prefs.get("city") or "tu zona"
+    ciudad = prefs.get("city") or "tu ciudad"
 
+    # Si el usuario NO tiene lat/lon guardadas, usamos IP (pero solo como último recurso)
     if lat is None or lon is None:
         ub = obtener_ubicacion()
-        lat = ub["latitud"]
-        lon = ub["longitud"]
-        ciudad = ub.get("ciudad") or ciudad
+        lat, lon, ciudad = ub["latitud"], ub["longitud"], ub["ciudad"]
 
     lat = float(lat)
     lon = float(lon)
 
-    # Mediodía solar (línea)
-    linea_mediodia = _linea_mediodia_solar(hoy, lon, tzname)
+    # 🔭 Cálculo solar (30–40) + mediodía solar y altura máxima
+    tramo_m, tramo_t = calcular_intervalos_optimos(
+        lat=lat,
+        lon=lon,
+        fecha=hoy,
+        tzname=tzname,
+    )
+    mediodia_solar_dt, alt_max = obtener_mediodia_solar_y_altura_max(lat, lon, hoy, tzname)
 
-    # 1) Ventanas 30–40° (astronómicas)
-    try:
-        tramo_m, tramo_t = calcular_intervalos_optimos(
-            lat=lat,
-            lon=lon,
-            fecha=hoy,
-            tzname=tzname,
+    hay_30 = bool(tramo_m or tramo_t)
+
+    # 🌦️ Meteo
+    pron = obtener_pronostico_diario(hoy, lat, lon, tzname)
+
+    # Evaluación simple: nubosidad alta en el día (si hay datos)
+    meteo_mala = False
+    if pron and pron.get("cloudcover"):
+        try:
+            meteo_mala = max(pron["cloudcover"]) >= 85
+        except Exception:
+            meteo_mala = False
+
+    # 🧾 Texto solar base (sin “teóricas”)
+    if not hay_30:
+        texto_solar = (
+            f"☁️ En tu latitud hoy no podrás producir vitamina D: "
+            f"el Sol no subirá por encima de 30° sobre el horizonte en {ciudad}.\n"
+            f"🧭 Mediodía solar: {mediodia_solar_dt.strftime('%H:%M')} (altura máxima ≈ {alt_max:.1f}°)"
         )
-    except Exception as e:
-        print(f"[WARN] calcular_intervalos_optimos falló: {e}")
-        tramo_m, tramo_t = None, None
-
-    hay_ventana = bool(tramo_m or tramo_t)
-
-    # 2) Meteo
-    try:
-        pron = obtener_pronostico_diario(hoy, lat, lon, tzname)
-    except Exception as e:
-        print(f"[WARN] obtener_pronostico_diario falló: {e}")
-        pron = None
-
-    meteo_mala = meteo_mala_por_nubes(pron)
-
-    # 3) Construir bloque solar según casos
-    # A) No hay ventana: por latitud/estación no llega a 30°
-    # B) Hay ventana pero meteo mala: mostrar tramos “teóricos” + nutri
-    # C) Hay ventana y meteo OK: mostrar tramos “reales” (astronómicos)
-
-    if not hay_ventana:
-        texto_solar_es = (
-            f"☁️ Hoy, en tu latitud, el Sol no subirá por encima de 30° sobre el horizonte en {ciudad}.\n"
-            f"➡️ Por tanto, no hay ventana 30–40° para sintetizar vitamina D."
-        )
-        if linea_mediodia:
-            texto_solar_es += f"\n{linea_mediodia}"
-
         est = estacion_del_anio(hoy, lat)
-        nutri = pick_nutri(est, str(chat_id), hoy)
-        extra_es = f"\n\n🍽️ Consejo nutricional de {est}:\n{nutri}"
-
-    elif meteo_mala:
-        texto_solar_es = (
-            "☁️ Hoy no se espera una ventana útil de sol para sintetizar vitamina D por nubosidad alta.\n"
-            "📌 Aun así, estas son las horas *teóricas* en las que el Sol estaría entre 30° y 40°:"
-            f"\n\n{_bloque_ventanas(ciudad, tramo_m, tramo_t)}"
-        )
-        if linea_mediodia:
-            texto_solar_es += f"\n{linea_mediodia}"
-
-        est = estacion_del_anio(hoy, lat)
-        nutri = pick_nutri(est, str(chat_id), hoy)
-        extra_es = f"\n\n🍽️ Consejo nutricional de {est}:\n{nutri}"
+        extra = f"\n\n🍽️ Consejo nutricional de {est}:\n{pick_nutri(est, chat_id, hoy)}"
 
     else:
-        texto_solar_es = (
-            "🌞 Ventanas saludables para vitamina D (30–40°):"
-            f"\n\n{_bloque_ventanas(ciudad, tramo_m, tramo_t)}"
+        # Siempre mostramos las ventanas reales 30–40°
+        base_ventanas = describir_intervalos_con_mediodia(
+            (tramo_m, tramo_t),
+            ciudad=ciudad,
+            mediodia_solar=mediodia_solar_dt,
+            alt_max=alt_max,
         )
-        if linea_mediodia:
-            texto_solar_es += f"\n{linea_mediodia}"
-        extra_es = ""
 
-    # 4) Consejo del día
-    consejo_es, ref_es = consejo_del_dia(now_local)
+        if meteo_mala:
+            # Aclaración correcta: el Sol estará ahí, pero la síntesis puede verse limitada por nubes
+            texto_solar = (
+                "☁️ Hoy hay nubosidad alta: eso puede reducir mucho la radiación UVB y, por tanto, la síntesis real de vitamina D.\n"
+                "📌 Aun así, estas son las ventanas en las que el Sol estará entre 30° y 40°:"
+                f"\n\n{base_ventanas}"
+            )
+
+            # Añadimos resumen meteo dentro de los tramos, si podemos
+            meteo_txt = formatear_intervalos_meteo((tramo_m, tramo_t), pron)
+            if meteo_txt:
+                texto_solar += f"\n\n🌦️ Meteo durante las ventanas:{meteo_txt}"
+
+            est = estacion_del_anio(hoy, lat)
+            extra = f"\n\n🍽️ Consejo nutricional de {est}:\n{pick_nutri(est, chat_id, hoy)}"
+        else:
+            texto_solar = f"{base_ventanas}"
+            meteo_txt = formatear_intervalos_meteo((tramo_m, tramo_t), pron)
+            if meteo_txt:
+                texto_solar += f"\n\n🌦️ Meteo durante las ventanas:{meteo_txt}"
+            extra = ""
+
+    consejo, ref = consejo_del_dia(now_local)
     dia = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"][now_local.weekday()]
 
     mensaje_es = (
-        f"🧠 Consejo para hoy ({dia}):\n{consejo_es}\n\n"
-        f"📚 Referencia: {ref_es}\n\n"
-        f"{texto_solar_es}{extra_es}"
+        f"🧠 Consejo para hoy ({dia}):\n{consejo}\n\n"
+        f"📚 *Referencia:* {ref}\n\n"
+        f"{texto_solar}{extra}"
     )
 
-    # 5) Traducción
-    lang = prefs.get("lang")
-    mensaje = traducir(mensaje_es, lang)
+    mensaje = traducir(mensaje_es, prefs.get("lang"))
 
-    # 6) Ping opcional
     if PING_ON_START:
-        try:
-            await bot.send_message(chat_id=chat_id, text="✅ Ping de diagnóstico (PING_ON_START activo).")
-        except Exception as e:
-            print(f"[WARN] Ping falló: {e}")
+        await bot.send_message(chat_id, "✅ Ping de diagnóstico")
 
-    # 7) Enviar
-    await bot.send_message(chat_id=chat_id, text=mensaje)
-
-    # 8) Marcar como enviado hoy (no duplicar)
+    await bot.send_message(chat_id, mensaje)
     mark_sent_today(chat_id, hoy)
 
-    # 9) Publicar en canal (opcional)
     if CANAL_CHAT_ID:
-        try:
-            pub = f"🔔 Consejo público:\n{mensaje}"
-            if len(pub) > 3800:
-                pub = pub[:3790] + "…"
-            await bot.send_message(chat_id=CANAL_CHAT_ID, text=pub)
-        except Exception as e:
-            print(f"[WARN] No pude publicar en canal: {e}")
+        await bot.send_message(CANAL_CHAT_ID, mensaje)
 
 # ================= Main =================
 
 async def main():
     if not BOT_TOKEN:
-        raise RuntimeError("❌ Falta BOT_TOKEN")
+        raise RuntimeError("Falta BOT_TOKEN")
 
     init_db()
     users = list_users()
     if not users:
-        print("ℹ️ No hay suscriptores aún.")
         return
 
     bot = Bot(BOT_TOKEN)
     now_utc = dt.datetime.now(dt.timezone.utc)
 
-    procesados = 0
-    enviados = 0
-
     for uid, prefs in users.items():
-        procesados += 1
         try:
-            before = prefs.get("last_sent_iso")
             await enviar_a_usuario(bot, uid, prefs, now_utc)
-            # No re-leemos DB; “enviados” real lo verás por logs de Telegram.
-            # Aun así, contamos como intento.
-            enviados += 1
         except Exception as e:
             print(f"❌ Error en {uid}: {e}")
-
-    print(f"✅ Cron OK. Procesados: {procesados}. Intentos: {enviados}. FORCE_SEND={FORCE_SEND}")
 
 if __name__ == "__main__":
     asyncio.run(main())
