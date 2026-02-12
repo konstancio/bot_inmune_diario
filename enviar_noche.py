@@ -9,8 +9,8 @@ from telegram import Bot
 from usuarios_repo import (
     init_db,
     list_users,
-    should_send_night,   # wrapper -> should_send_sleep_now
-    mark_sent_night,     # wrapper -> mark_sleep_sent_today
+    should_send_sleep_now,   # wrapper -> should_send_sleep_now
+    mark_sleep_sent_today,     # wrapper -> mark_sleep_sent_today
 )
 
 from consejos_parasimpatico import CONSEJOS_PARASIMPATICO
@@ -44,7 +44,7 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: dt.date
     # - normal: solo si entra en ventana (21:00 y 0-10 min por defecto) y no enviado hoy
     # - FORCE_SEND=1: permite probar, pero sin duplicar ese día
     if not FORCE_SEND:
-        if not should_send_night(prefs, now_utc):
+        if not should_send_sleep_now(prefs, now_utc):
             return
     else:
         # Si ya se envió hoy, no reenviar
@@ -62,7 +62,7 @@ async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: dt.date
     await bot.send_message(chat_id=str(chat_id), text=mensaje)
 
     # Marcar enviado hoy (clave nocturna)
-    mark_sent_night(str(chat_id), hoy_local)
+    mark_sleep_sent_today(str(chat_id), hoy_local)
 
 
 async def main():
