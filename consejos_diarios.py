@@ -1,4 +1,4 @@
-consejos = {
+CONSEJOS_DIARIOS = {
     0: [  # Lunes: Sueño reparador y ritmo circadiano
         """😴 Consejo para hoy (Lunes):\nDormir bien es uno de los pilares fundamentales del sistema inmune. Durante el sueño profundo, se liberan citoquinas que regulan la inflamación y combaten infecciones.""",
         """🧬 *Referencia:* Besedovsky et al. "The sleep–immune crosstalk in health and disease." *Physiol Rev*, 2019.""",
