@@ -1,3 +1,4 @@
+# redeploy trigger
 # enviar_consejo.py
 # Envío diario multiusuario: consejo + sol 30–40° + mediodía solar (hora + altura máxima) + meteo.
 # IMPORTANTE: Usa ubicación del usuario (DB), NO la IP del servidor (Railway).
