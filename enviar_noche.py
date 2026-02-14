@@ -1,89 +1,76 @@
-# enviar_noche.py — mensaje parasimpático nocturno (multiusuario)
+# enviar_noche.py
+# Cron cada 5 min: envía recordatorio nocturno cuando should_send_sleep_now(chat) sea True.
+
+from __future__ import annotations
 
 import os
-import asyncio
 import datetime as dt
-import pytz
-from telegram import Bot
+import logging
+import requests
 
-from usuarios_repo import (
-    init_db,
-    list_users,
-    should_send_sleep_now,   # wrapper -> should_send_sleep_now
-    mark_sleep_sent_today,     # wrapper -> mark_sleep_sent_today
-)
+import usuarios_repo as repo
 
-from consejos_parasimpatico import CONSEJOS_PARASIMPATICO
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("enviar_noche")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ONLY_CHAT_ID = os.getenv("ONLY_CHAT_ID")
-FORCE_SEND = os.getenv("FORCE_SEND", "0").strip() == "1"
+if not BOT_TOKEN:
+    raise RuntimeError("❌ Falta BOT_TOKEN en variables de entorno")
 
-
-def elegir_consejo(chat_id: str, fecha: dt.date) -> str:
-    idx = (hash(str(chat_id)) + fecha.toordinal()) % len(CONSEJOS_PARASIMPATICO)
-    return CONSEJOS_PARASIMPATICO[idx]
-
-
-async def enviar_a_usuario(bot: Bot, chat_id: str, prefs: dict, now_utc: dt.datetime):
-    if ONLY_CHAT_ID and str(chat_id) != str(ONLY_CHAT_ID):
-        return
-
-    # Hora local del usuario
-    tzname = (prefs.get("tz") or "Europe/Madrid").strip()
-    try:
-        tz = pytz.timezone(tzname)
-    except Exception:
-        tz = pytz.timezone("Europe/Madrid")
-        tzname = "Europe/Madrid"
-
-    now_local = now_utc.astimezone(tz)
-    hoy_local = now_local.date()
-
-    # Lógica de envío:
-    # - normal: solo si entra en ventana (21:00 y 0-10 min por defecto) y no enviado hoy
-    # - FORCE_SEND=1: permite probar, pero sin duplicar ese día
-    if not FORCE_SEND:
-        if not should_send_sleep_now(prefs, now_utc):
-            return
-    else:
-        # Si ya se envió hoy, no reenviar
-        if prefs.get("last_sleep_sent_iso") == hoy_local.isoformat():
-            return
-
-    consejo = elegir_consejo(chat_id, hoy_local)
-
-    mensaje = (
-        "🌙 Consejo para activar tu sistema parasimpático antes de dormir:\n\n"
-        f"{consejo}\n\n"
-        "😴 Respira despacio, baja las luces y deja que el cuerpo haga su trabajo."
+def tg_send(chat_id: str, text: str) -> None:
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    r = requests.post(
+        url,
+        json={"chat_id": str(chat_id), "text": text, "disable_web_page_preview": True},
+        timeout=20,
     )
+    r.raise_for_status()
 
-    await bot.send_message(chat_id=str(chat_id), text=mensaje)
+def main():
+    try:
+        repo.init_db()
+        repo.migrate_fill_defaults()
+    except Exception as e:
+        logger.warning(f"[WARN] init_db/migrate: {e}")
 
-    # Marcar enviado hoy (clave nocturna)
-    mark_sleep_sent_today(str(chat_id), hoy_local)
-
-
-async def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("Falta BOT_TOKEN")
-
-    init_db()
-    users = list_users()
-    if not users:
-        print("ℹ️ No hay suscriptores aún.")
+    chats = repo.list_users()
+    if not chats:
+        logger.info("No hay usuarios en subscribers.")
         return
 
-    bot = Bot(BOT_TOKEN)
     now_utc = dt.datetime.now(dt.timezone.utc)
 
-    for uid, prefs in users.items():
+    for chat_id, chat in chats.items():
+        chat_id = str(chat_id)
         try:
-            await enviar_a_usuario(bot, uid, prefs, now_utc)
-        except Exception as e:
-            print(f"❌ Error nocturno {uid}: {e}")
+            if not repo.should_send_sleep_now(chat, now_utc=now_utc):
+                continue
 
+            tzname = (chat.get("tz") or "Europe/Madrid").strip() or "Europe/Madrid"
+            try:
+                import pytz
+                tz = pytz.timezone(tzname)
+            except Exception:
+                import pytz
+                tz = pytz.timezone("Europe/Madrid")
+                tzname = "Europe/Madrid"
+
+            local_date = now_utc.astimezone(tz).date()
+
+            msg = (
+                "🌙 Modo noche (parasimpático):\n"
+                "• Luz baja 60–90 min antes de dormir\n"
+                "• Pantallas fuera / filtro cálido\n"
+                "• Cena ligera + respiración 4-6\n"
+                "• Habitación fresca y oscura\n"
+            )
+
+            tg_send(chat_id, msg)
+            repo.mark_sleep_sent_today(chat_id, local_date)
+            logger.info(f"✅ Nocturno enviado a {chat_id} {local_date.isoformat()}")
+
+        except Exception as e:
+            logger.exception(f"❌ Error nocturno a {chat_id}: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
