@@ -75,10 +75,15 @@ def _coerce_single_text(item) -> str:
 
 
 def pick_consejo(local_date: dt.date) -> str:
+    """
+    Usa weekday() (0=Lunes ... 6=Domingo)
+    porque CONSEJOS_DIARIOS usa claves numéricas.
+    """
+    idx = local_date.weekday()  # 0..6
+
     if isinstance(CONSEJOS_DIARIOS, dict):
-        k = weekday_es(local_date)
-        bucket = CONSEJOS_DIARIOS.get(k) or CONSEJOS_DIARIOS.get(k.lower())
-        if bucket is None:
+        bucket = CONSEJOS_DIARIOS.get(idx)
+        if not bucket:
             bucket = next(iter(CONSEJOS_DIARIOS.values()))
         return _coerce_single_text(bucket)
 
