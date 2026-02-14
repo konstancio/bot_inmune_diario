@@ -91,15 +91,11 @@ def geocodificar_ciudad(ciudad: str) -> Optional[dict]:
 # 3) Cálculo solar (elevación) sin Astral
 # --------------------------------------------
 def _declinacion_solar(n: int) -> float:
-    # Cooper: δ = 23.44° * sin( 2π (n-81) / 365 )
     return 23.44 * math.sin(math.radians((360.0 / 365.0) * (n - 81)))
 
-
 def _equation_of_time_minutes(n: int) -> float:
-    # Spencer/Cooper (min)
     B = math.radians(360.0 * (n - 81) / 364.0)
     return 9.87 * math.sin(2 * B) - 7.53 * math.cos(B) - 1.5 * math.sin(B)
-
 
 def _elevacion_solar_deg(lat_deg: float, decl_deg: float, hour_angle_deg: float) -> float:
     lat = math.radians(lat_deg)
@@ -108,12 +104,7 @@ def _elevacion_solar_deg(lat_deg: float, decl_deg: float, hour_angle_deg: float)
     sin_alt = math.sin(lat) * math.sin(dec) + math.cos(lat) * math.cos(dec) * math.cos(h)
     return math.degrees(math.asin(max(-1.0, min(1.0, sin_alt))))
 
-
 def _solar_hour_angle(local_dt: dt.datetime, lon: float, tzname: str, n: int) -> float:
-    """
-    Ángulo horario (grados) aplicando EoT y corrección por longitud.
-    local_dt debe estar en TZ local (aware).
-    """
     tz = pytz.timezone(tzname)
     noon = tz.localize(dt.datetime(local_dt.year, local_dt.month, local_dt.day, 12, 0))
     tz_hours = noon.utcoffset().total_seconds() / 3600.0  # cambia con DST
@@ -126,7 +117,6 @@ def _solar_hour_angle(local_dt: dt.datetime, lon: float, tzname: str, n: int) ->
     hora_solar = hora_decimal + corr_min / 60.0
 
     return 15.0 * (hora_solar - 12.0)
-
 
 def _interp_time(t1: dt.datetime, e1: float, t2: dt.datetime, e2: float, target: float) -> dt.datetime:
     try:
@@ -145,10 +135,10 @@ def calcular_intervalos_30_40(
     fecha: dt.date,
     tzname: str,
     paso_min: int = 1,
-) -> Tuple[Optional[Tuple[dt.datetime, dt.datetime]], Optional[Tuple[dt.datetime, dt.datetime]]]:
+) -> List[Tuple[dt.datetime, dt.datetime]]:
     """
-    Devuelve 2 tramos (mañana/tarde) donde elevación ∈ [30,40].
-    CORRECCIÓN: si un tramo cruza las 12:00, se parte en mañana/tarde.
+    Devuelve lista de tramos donde elevación ∈ [30,40], en hora local tz-aware.
+    (Lista, no (mañana,tarde), para que el caller pueda formatear bonito.)
     """
     tz = pytz.timezone(tzname)
     n = fecha.timetuple().tm_yday
@@ -173,7 +163,6 @@ def calcular_intervalos_30_40(
     for i in range(1, len(puntos)):
         t_prev, e_prev = puntos[i - 1]
         t, e = puntos[i]
-
         prev_in = in_band(e_prev)
         curr_in = in_band(e)
 
@@ -192,28 +181,7 @@ def calcular_intervalos_30_40(
     if en and ini is not None:
         tramos.append((ini, puntos[-1][0]))
 
-    # Ahora: construir mañana/tarde correctamente
-    mediodia = tz.localize(dt.datetime(fecha.year, fecha.month, fecha.day, 12, 0))
-
-    tramo_m: Optional[Tuple[dt.datetime, dt.datetime]] = None
-    tramo_t: Optional[Tuple[dt.datetime, dt.datetime]] = None
-
-    for a, b in tramos:
-        # si cruza mediodía, partir
-        if a < mediodia < b:
-            tramo_m = (a, mediodia)
-            tramo_t = (mediodia, b)
-        else:
-            if b <= mediodia:
-                # quedarnos con el más cercano a mediodía (el último antes de 12)
-                if (tramo_m is None) or (b > tramo_m[1]):
-                    tramo_m = (a, b)
-            if a >= mediodia:
-                # quedarnos con el más cercano a mediodía (el primero tras 12)
-                if (tramo_t is None) or (a < tramo_t[0]):
-                    tramo_t = (a, b)
-
-    return tramo_m, tramo_t
+    return tramos
 
 
 def calcular_mediodia_solar(
@@ -225,7 +193,7 @@ def calcular_mediodia_solar(
 ) -> Tuple[dt.datetime, float]:
     """
     Estima el mediodía solar como el instante de máxima elevación del día.
-    Devuelve: (datetime_local, elev_max_deg)
+    Devuelve: (datetime_local tz-aware, elev_max_deg)
     """
     tz = pytz.timezone(tzname)
     n = fecha.timetuple().tm_yday
@@ -247,26 +215,56 @@ def calcular_mediodia_solar(
 
 
 # ---------------------------------------
-# 4) Formato intervalos + mediodía solar
+# 4) Texto solar (ventanas + mediodía solar)
 # ---------------------------------------
-def describir_intervalos_30_40(
-    intervalos: Tuple[
-        Optional[Tuple[dt.datetime, dt.datetime]],
-        Optional[Tuple[dt.datetime, dt.datetime]],
-    ],
+def describir_intervalos_y_mediodia(
+    lat: float,
+    lon: float,
+    fecha: dt.date,
+    tzname: str,
     ciudad: str,
 ) -> str:
-    maniana, tarde = intervalos
-    texto = f"🌤 Ventanas 30–40° en {ciudad}:"
-    if maniana:
-        a, b = maniana
-        texto += f"\n🌅 Mañana: {a.strftime('%H:%M')}–{b.strftime('%H:%M')}"
-    if tarde:
-        a, b = tarde
-        texto += f"\n🌇 Tarde: {a.strftime('%H:%M')}–{b.strftime('%H:%M')}"
-    if not maniana and not tarde:
-        texto += "\n(No hay elevación suficiente hoy para 30°)"
-    return texto
+    """
+    Devuelve texto con:
+    - tramos 30–40° (mañana/tarde si aplica)
+    - mediodía solar (hora)
+    - altura máxima del día (°)
+    """
+    tz = pytz.timezone(tzname)
+    tramos = calcular_intervalos_30_40(lat, lon, fecha, tzname, paso_min=1)
+    noon_dt, elev_max = calcular_mediodia_solar(lat, lon, fecha, tzname, paso_min=1)
+
+    lines = [f"🌤 Ventanas 30–40° en {ciudad}:"]
+
+    if not tramos:
+        # Si no hay tramos, puede ser porque max < 30 (latitud/estación)
+        if elev_max < 30.0:
+            lines.append("(Hoy el Sol no llega a 30° sobre el horizonte)")
+        else:
+            lines.append("(Hoy no hay tramo continuo dentro de 30–40°)")
+    else:
+        # etiquetamos mañana/tarde respecto a mediodía solar real
+        manana_parts = []
+        tarde_parts = []
+        for a, b in tramos:
+            if b <= noon_dt:
+                manana_parts.append((a, b))
+            elif a >= noon_dt:
+                tarde_parts.append((a, b))
+            else:
+                manana_parts.append((a, noon_dt))
+                tarde_parts.append((noon_dt, b))
+
+        def fmt(parts):
+            return ", ".join([f"{x.strftime('%H:%M')}–{y.strftime('%H:%M')}" for x, y in parts])
+
+        if manana_parts:
+            lines.append(f"🌅 Mañana: {fmt(manana_parts)}")
+        if tarde_parts:
+            lines.append(f"🌇 Tarde: {fmt(tarde_parts)}")
+
+    lines.append(f"🧭 Mediodía solar: {noon_dt.strftime('%H:%M')} (altura máx ≈ {elev_max:.1f}°)")
+    return "\n".join(lines)
 
 
 # ------------------------------------------------
@@ -279,7 +277,7 @@ def obtener_pronostico_diario(
     tzname: str,
 ) -> Optional[dict]:
     """
-    Devuelve dict con arrays:
+    Devuelve dict hourly con arrays:
       'time','cloudcover','precipitation_probability'
     """
     try:
@@ -304,64 +302,72 @@ def _avg_in_range(
     inicio: dt.datetime,
     fin: dt.datetime,
 ) -> Optional[int]:
+    """
+    Media simple (redondeada) en [inicio, fin] evitando naive/aware mismatch.
+    """
     if not times_iso or not values:
         return None
+
+    tzinfo = inicio.tzinfo
     sel: List[float] = []
+
     for iso, val in zip(times_iso, values):
         if val is None:
             continue
         try:
-            t = dt.datetime.fromisoformat(iso)  # suele venir naive local
+            t = dt.datetime.fromisoformat(iso)
         except Exception:
             try:
                 t = dt.datetime.strptime(iso, "%Y-%m-%dT%H:%M")
             except Exception:
                 continue
+
+        # Open-Meteo suele venir naive local: le ponemos la tz del intervalo
+        if t.tzinfo is None and tzinfo is not None:
+            t = t.replace(tzinfo=tzinfo)
+
         if inicio <= t <= fin:
             sel.append(float(val))
+
     if not sel:
         return None
     return int(round(sum(sel) / len(sel)))
 
 
-def resumen_meteo_en_intervalos(
-    intervalos: Tuple[
-        Optional[Tuple[dt.datetime, dt.datetime]],
-        Optional[Tuple[dt.datetime, dt.datetime]],
-    ],
+def formatear_meteo_en_tramos(
+    tramos: List[Tuple[dt.datetime, dt.datetime]],
     hourly: Optional[dict],
-) -> Tuple[Optional[int], Optional[int]]:
+) -> str:
     """
-    Devuelve (nubes_media, lluvia_prob_media) para el conjunto de ventanas 30–40.
-    Si hay mañana+tarde, promedia ambas (ponderación simple).
+    Devuelve bloque texto con nubosidad/lluvia media durante los tramos 30–40°.
     """
-    if not hourly:
-        return None, None
+    if not tramos or not hourly:
+        return ""
 
     times = hourly.get("time") or []
     clouds = hourly.get("cloudcover") or []
     pprec = hourly.get("precipitation_probability") or []
 
-    partes = []
-    for tramo in intervalos:
-        if not tramo:
-            continue
-        a, b = tramo
+    if not times or not clouds:
+        return ""
+
+    lines = ["☁️ Meteo durante las ventanas 30–40°:"]
+    for a, b in tramos:
         c = _avg_in_range(times, clouds, a, b)
         p = _avg_in_range(times, pprec, a, b)
-        if c is not None or p is not None:
-            partes.append((c, p))
+        if c is None and p is None:
+            continue
+        estado = "despejado"
+        icon = "☀️"
+        if c is not None:
+            if c >= 80:
+                estado = "muy nuboso"
+                icon = "☁️"
+            elif c >= 40:
+                estado = "parcial"
+                icon = "⛅️"
+        c_txt = f"nubes {c}%" if c is not None else "nubes —"
+        p_txt = f"lluvia {p}%" if p is not None else "lluvia —"
+        lines.append(f"• {a.strftime('%H:%M')}–{b.strftime('%H:%M')}: {icon} {estado} ({c_txt}, {p_txt})")
 
-    if not partes:
-        return None, None
-
-    c_vals = [x for x, _ in partes if x is not None]
-    p_vals = [y for _, y in partes if y is not None]
-
-    c_avg = int(round(sum(c_vals) / len(c_vals))) if c_vals else None
-    p_avg = int(round(sum(p_vals) / len(p_vals))) if p_vals else None
-    return c_avg, p_avg
-
-
-def hay_mucha_nube(nubes_pct: Optional[int]) -> bool:
-    return (nubes_pct is not None) and (nubes_pct >= 75)
+    return "\n".join(lines) if len(lines) > 1 else ""
